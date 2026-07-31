@@ -1,0 +1,1128 @@
+---
+title: "Main_IA"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    
+date: "2026-07-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  error = FALSE
+)
+
+options(
+  width = 1000,
+  tibble.width = Inf,
+  tibble.print_max = Inf,
+  dplyr.print_max = Inf
+)
+```
+
+```{r}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+source("epic_ram.R")
+source("Online_mul_ram.R")
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(plotly)
+library(epic)
+library(purrr)
+```
+
+# I. Data descritive
+We first import the datasets. Each file rda contain: "ID belier", "ID brebis", moment of each chevauchement"
+```{r}
+
+rda_dir <- file.path("..", "Data", "rda_effet_male")
+
+rda_files <- list.files(
+  rda_dir,
+  pattern = "\\.rda$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+invisible(lapply(rda_files, load, envir = .GlobalEnv))
+
+dataset = tools::file_path_sans_ext(basename(rda_files))
+
+dataset
+
+```
+
+Summary data
+
+```{r}
+result <- bind_rows(
+  lapply(dataset, function(dataset) {
+
+    dat <- as.data.frame(
+      get(dataset, envir = .GlobalEnv)
+    )
+
+    names(dat)[1:3] <- c("ID belier", "ID brebis","time")
+
+    dates <- as.Date(dat$time)
+    data.frame(
+      dataset = dataset,
+      nb_belier = n_distinct(dat$`ID belier`, na.rm = TRUE),
+      nb_brebis = n_distinct(dat$`ID brebis`, na.rm = TRUE),
+      date_start = min(dates),
+      date_end = max(dates),
+      nb_days = as.numeric(max(dates) - min(dates)) + 1
+    )
+  })
+)
+
+result
+```
+Bar chart showing the number of events for each ram ( exampmle here: LaCazotte2023 and Corse 2025 )
+```{r}
+LaCazotte2023_count <- LaCazotte2023 %>%
+  filter(!is.na(time)) %>%
+  count(`ID belier`, name = "n_events") %>%
+  mutate(`ID belier` = as.factor(`ID belier`))
+
+Corse2025_count <- Corse2025 %>%
+  filter(!is.na(time)) %>%
+  count(`ID belier`, name = "n_events") %>%
+  mutate(`ID belier` = as.factor(`ID belier`))
+
+ggplot(LaCazotte2023_count, aes(x = `ID belier`, y = n_events)) +
+  geom_col() +
+  labs(
+    title = "Number of events for each ram -- La Cazotte 2023",
+    x = "Ram ID",
+    y = "Number of events"
+  ) +
+  theme_bw()
+
+ggplot(Corse2025_count, aes(x = `ID belier`, y = n_events)) +
+  geom_col() +
+  labs(
+    title = "Number of events for each ram -- Corse 2025",
+    x = "Ram ID",
+    y = "Number of events"
+  ) +
+  theme_bw()
+```
+
+Comment: : Each raw material has a different level of activity; therefore, we predict that the effect of each raw differs.
+
+# II. Application our algorithms to dataset
+## 1. Genaral function
+These functions below prepares the data for algorithms: standardizes column names, converts event timestamps to a unified time scale (hours or days), and sets markers for "before" and "after" (e.g., 1).
+
+```{r}
+parse_time <- function(x) {
+  lubridate::force_tz(x, tzone = "UTC")}
+```
+
+```{r}
+prepare_algorithm_data <- function(dat, time_unit = "hours") {
+  
+  dat <- as.data.frame(dat)
+  names(dat)[1:3] <- c("ID_belier", "ID_brebis", "time")
+  
+  dat$time <- parse_time(dat$time)
+  
+  day_start <- floor_date(min(dat$time, na.rm = TRUE), unit = "day")
+  day_end   <- ceiling_date(max(dat$time, na.rm = TRUE), unit = "day")
+  
+  if (time_unit == "hours") {
+    t_final <- as.numeric(difftime(day_end, day_start, units = "hours"))
+    scale_time <- 3600
+  } else {
+    t_final <- as.numeric(difftime(day_end, day_start, units = "days"))
+    scale_time <- 3600 * 24
+  }
+  
+  dat_epic <- dat %>%
+    mutate(
+      event_time = as.numeric(difftime(time, day_start, units = "secs")) / scale_time,
+      TIMES = 1
+    ) %>%
+transmute(
+  id_original = ID_brebis,
+  id = as.integer(factor(ID_brebis)),
+  id_char = as.character(ID_brebis),
+  time = as.numeric(event_time),
+  marks = as.numeric(TIMES),
+  numAlpha = as.character(ID_belier),
+  ram = as.character(ID_belier)
+    ) %>%
+    filter(
+      !is.na(id_original),
+      !is.na(id),
+      !is.na(time),
+      !is.na(marks),
+      !is.na(numAlpha)
+    ) %>%
+    arrange(id, time)
+  
+  list(
+    dat_epic = dat_epic,
+    t_final = t_final,
+    day_start = day_start,
+    day_end = day_end
+  )
+}
+```
+
+Genaral function for offline running with marks fixing
+
+```{r}
+run_offline <- function(dat_epic, t_final,nprec = 10,alpha = 0.05, nb_MC = 200,seed = 123) {
+  ram_levels <- sort(unique(dat_epic$numAlpha))
+  init_by_ram <- dat_epic %>%
+    group_by(numAlpha) %>%
+    summarise(n_events = n(), .groups = "drop") %>%
+    arrange(numAlpha)
+  
+  nb_indiv <- length(unique(dat_epic$id))
+  lambda_bar_ram <- init_by_ram$n_events / (nb_indiv * t_final)
+  
+  lambda_init <- cbind(
+    before = pmax(lambda_bar_ram * 0.5, 0.01),
+    after  = pmax(lambda_bar_ram * 2, 0.01)
+  )
+  
+  mu_init <- matrix( 1, nrow = length(ram_levels), ncol = 2)
+  
+  colnames(lambda_init) <- c("before", "after")
+  colnames(mu_init) <- c("before", "after")
+  rownames(lambda_init) <- ram_levels
+  rownames(mu_init) <- ram_levels
+  
+  set.seed(seed)
+  
+  time_run <- system.time({
+    out <- detectS_BH_m(
+      datain = dat_epic %>% select(id, time, marks, numAlpha),
+      lambda0 = lambda_init,
+      mu0 = mu_init,
+      nprec = nprec,
+      alpha = alpha,
+      nb_MC = nb_MC,
+      t_final = t_final
+    )
+  })
+  
+  lambda_hat <- out$lambda_n
+  mu_hat <- out$mu_n
+  
+  Si_table <- dat_epic %>%
+    distinct(id, id_original) %>%
+    arrange(id) %>%
+    mutate(S_offline = out$outBH$S) %>%
+    transmute(
+      id = as.character(id_original),
+      S_offline = S_offline
+    )
+  
+  param_offline <- data.frame(
+    ram = rownames(lambda_hat),
+    lambda_before = lambda_hat[, "before"],
+    lambda_after  = lambda_hat[, "after"],
+    mu_before     = mu_hat[, "before"],
+    mu_after      = mu_hat[, "after"]
+  )
+  
+  list(
+    out = out,
+    time = time_run,
+    lambda_hat = lambda_hat,
+    mu_hat = mu_hat,
+    Si_table = Si_table,
+    param_offline = param_offline
+  )
+}
+```
+
+Genaral function fo Online running with marks fixing
+
+```{r}
+run_online <- function(dat_epic, t_final, lambda_hat, d_min, B = 200,  alpha = 0.05,
+                       seed = 123,verbose = TRUE, return_null = TRUE) {
+  
+  dat_online <- dat_epic %>%
+    transmute(
+      id = id_char,
+      time = as.numeric(time),
+      marks = as.numeric(marks),
+      ram = as.character(ram)
+    ) %>%
+    filter(
+      !is.na(id),
+      !is.na(time),
+      !is.na(marks),
+      !is.na(ram)
+    ) %>%
+    arrange(id, time)
+  
+  ids <- sort(unique(dat_online$id))
+  
+  lambda0_vec <- lambda_hat[, "before"]
+  lambda1_vec <- lambda_hat[, "after"]
+  
+  mu0_vec <- rep(1, length(lambda0_vec))
+  mu1_vec <- rep(1, length(lambda1_vec))
+  
+  names(lambda0_vec) <- rownames(lambda_hat)
+  names(lambda1_vec) <- rownames(lambda_hat)
+  names(mu0_vec) <- rownames(lambda_hat)
+  names(mu1_vec) <- rownames(lambda_hat)
+  
+  set.seed(seed)
+  
+  time_run <- system.time({
+    out <- detect_rupture_herd_online_FWER_ram(
+      dat_herd = dat_online,
+      ids = ids,
+      K = ceiling(t_final),
+      lambda0 = lambda0_vec,
+      mu0 = mu0_vec,
+      lambda1 = lambda1_vec,
+      mu1 = mu1_vec,
+      B = B,
+      alpha = alpha,
+      d_min = d_min,
+      seed = seed,
+      verbose = verbose,
+      return_null = return_null,
+      ram_levels = rownames(lambda_hat)
+    )
+  })
+  
+  list(
+    out = out,
+    time = time_run,
+    dat_online = dat_online
+  )
+}
+```
+
+The code below create a table compare between offline and online algo,  a graph plotting events, S_offline, S_online, and alarm time.
+
+```{r}
+compare_and_plot_algorithms <- function(dat_epic, t_final,
+                                        off, on,
+                                        dataset_name = "",
+                                        time_unit = "hours",
+                                        eps = 1e-8) {
+  compare_tab <- off$Si_table %>%
+    left_join(
+      on$out$result %>%
+        mutate(id = as.character(id)) %>%
+        transmute(
+          id,
+          alarm,
+          alarm_time = tau,
+          S_online = S_hat,
+          p_at_alarm,
+          G_at_alarm
+        ),
+      by = "id"
+    ) %>%
+    mutate(
+      alarm_time = ifelse(
+        is.na(alarm_time) | is.infinite(alarm_time),
+        t_final,
+        alarm_time
+      ),
+      S_online = ifelse(
+        is.na(S_online),
+        t_final,
+        S_online
+      ),
+      diff_S = S_online - S_offline,
+      same_S = abs(diff_S) < eps
+    )
+  
+  summary_tab <- compare_tab %>%
+    summarise(
+      dataset = dataset_name,
+      unit = time_unit,
+      same_S = sum(same_S, na.rm = TRUE),
+      different_S = sum(!same_S, na.rm = TRUE),
+      mean_alarm_delay = mean(
+        alarm_time[alarm] - S_online[alarm],
+        na.rm = TRUE
+      )
+    )
+  
+  id_order <- compare_tab %>%
+    arrange(S_offline) %>%
+    pull(id)
+  
+  events_plot <- dat_epic %>%
+    transmute(
+      id = factor(id_char, levels = id_order),
+      time = as.numeric(time),
+      marks = as.numeric(marks),
+      type = "Event"
+    )
+  
+  rupture_plot <- bind_rows(
+    compare_tab %>%
+      transmute(
+        id = factor(id, levels = id_order),
+        time = S_offline,
+        type = ifelse(same_S, "Offline = Online", "Offline result")
+      ),
+    
+    compare_tab %>%
+      filter(!same_S) %>%
+      transmute(
+        id = factor(id, levels = id_order),
+        time = S_online,
+        type = "Online result"
+      ),
+    
+    compare_tab %>%
+      filter(alarm) %>%
+      transmute(
+        id = factor(id, levels = id_order),
+        time = alarm_time,
+        type = "Alarm"
+      )
+  )
+  
+  rupture_plot <- rupture_plot %>%
+  mutate(
+    type = factor(
+      type,
+      levels = c(
+        "Alarm",
+        "Offline = Online",
+        "Offline result",
+        "Online result"
+      )
+    )
+  )
+  title_text <- paste0(
+    dataset_name,
+    ": offline vs online detection with ram effect"
+  )
+  
+  g <- ggplot() +
+  geom_point(
+    data = events_plot,
+    aes(x = time, y = id, size = marks),
+    color = "black",
+    alpha = 0.6
+  ) +
+  geom_point(
+    data = rupture_plot,
+    aes(x = time, y = id, color = type),
+    size = 2.2
+  ) +
+  scale_color_manual(
+    values = c(
+      "Alarm" = "#FFD700",
+      "Offline = Online" = "blue",
+      "Offline result" = "red",
+      "Online result" = "green"
+    )
+  ) +
+  labs(
+    title = title_text,
+    x = paste0("Time from start observation (", time_unit, ")"),
+    y = "Ewe ID",
+    color = "Type",
+    size = "TIMES"
+  ) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(size = 10, hjust = 0.5),
+    axis.text.y = element_text(size = 6),
+    axis.text.x = element_text(size = 7)
+  )
+  
+  print(summary_tab)
+  print(compare_tab)
+  print(g)
+  
+  invisible(
+    list(
+      summary = summary_tab,
+      compare = compare_tab,
+      plot = g
+    )
+  )
+}
+```
+
+## 2. Application to datasets
+We now apply the functions below to our different datasets.
+
+### Corse 24
+
+```{r}
+
+prep_corse24 <- prepare_algorithm_data(
+  dat = Corse2024,
+  time_unit = "hours"
+)
+
+off_corse24 <- run_offline(
+  dat_epic = prep_corse24$dat_epic,
+  t_final = prep_corse24$t_final,
+  nprec = 50,
+  alpha = 0.05,
+  nb_MC = 500,
+  seed = 123
+)
+
+on_corse24 <- run_online(
+  dat_epic = prep_corse24$dat_epic,
+  t_final = prep_corse24$t_final,
+  lambda_hat = off_corse24$lambda_hat,
+  d_min = 1,
+  B = 200,
+  alpha = 0.05,
+  seed = 123
+)
+
+res_corse24 <- compare_and_plot_algorithms(
+  dat_epic = prep_corse24$dat_epic,
+  t_final = prep_corse24$t_final,
+  off = off_corse24,
+  on = on_corse24,
+  dataset_name = "Corse 2024",
+  time_unit = "hours"
+)
+```
+
+### Corse 25
+
+```{r}
+prep_corse25 <- prepare_algorithm_data(
+  dat = Corse2025,
+  time_unit = "hours"
+)
+
+off_corse25 <- run_offline(
+  dat_epic = prep_corse25$dat_epic,
+  t_final = prep_corse25$t_final,
+  nprec = 50,
+  alpha = 0.05,
+  nb_MC = 500,
+  seed = 123
+)
+
+on_corse25 <- run_online(
+  dat_epic = prep_corse25$dat_epic,
+  t_final = prep_corse25$t_final,
+  lambda_hat = off_corse25$lambda_hat,
+  d_min = 1,
+  B = 200,
+  alpha = 0.05,
+  seed = 123
+)
+
+res_corse25 <- compare_and_plot_algorithms(
+  dat_epic = prep_corse25$dat_epic,
+  t_final = prep_corse25$t_final,
+  off = off_corse25,
+  on = on_corse25,
+  dataset_name = "Corse 2025",
+  time_unit = "hours"
+)
+```
+
+### La Fage 2023
+
+```{r}
+prep_LaFage2023 <- prepare_algorithm_data(
+  dat =LaFage2023,
+  time_unit = "hours"
+)
+
+off_LaFage2023 <- run_offline(
+  dat_epic = prep_LaFage2023$dat_epic,
+  t_final = prep_LaFage2023$t_final,
+  nprec = 50,
+  alpha = 0.05,
+  nb_MC = 500,
+  seed = 123
+)
+
+on_LaFage2023 <- run_online(
+  dat_epic = prep_LaFage2023$dat_epic,
+  t_final = prep_LaFage2023$t_final,
+  lambda_hat = off_LaFage2023$lambda_hat,
+  d_min = 1,
+  B = 200,
+  alpha = 0.05,
+  seed = 123
+)
+
+res_LaFage2023 <- compare_and_plot_algorithms(
+  dat_epic = prep_LaFage2023$dat_epic,
+  t_final = prep_LaFage2023$t_final,
+  off = off_LaFage2023,
+  on = on_LaFage2023,
+  dataset_name = "La Fage 2023",
+  time_unit = "hours"
+)
+```
+
+### La Fage 2025
+
+```{r}
+prep_LaFage2025 <- prepare_algorithm_data(
+  dat =LaFage2025,
+  time_unit = "days"
+)
+
+off_LaFage2025 <- run_offline(
+  dat_epic = prep_LaFage2025$dat_epic,
+  t_final = prep_LaFage2025$t_final,
+  nprec = 50,
+  alpha = 0.05,
+  nb_MC = 500,
+  seed = 123
+)
+
+on_LaFage2025 <- run_online(
+  dat_epic = prep_LaFage2025$dat_epic,
+  t_final = prep_LaFage2025$t_final,
+  lambda_hat = off_LaFage2025$lambda_hat,
+  d_min = 1,
+  B = 200,
+  alpha = 0.05,
+  seed = 123
+)
+
+res_LaFage2025 <- compare_and_plot_algorithms(
+  dat_epic = prep_LaFage2025$dat_epic,
+  t_final = prep_LaFage2025$t_final,
+  off = off_LaFage2025,
+  on = on_LaFage2025,
+  dataset_name = "La Fage 2025",
+  time_unit = "days"
+)
+```
+
+### La Cazotte 2023
+
+```{r}
+prep_LaCazotte2023 <- prepare_algorithm_data(
+  dat =LaCazotte2023,
+  time_unit = "days"
+)
+
+off_LaCazotte2023 <- run_offline(
+  dat_epic = prep_LaCazotte2023$dat_epic,
+  t_final = prep_LaCazotte2023$t_final,
+  nprec = 50,
+  alpha = 0.05,
+  nb_MC = 500,
+  seed = 123
+)
+
+on_LaCazotte2023 <- run_online(
+  dat_epic = prep_LaCazotte2023$dat_epic,
+  t_final = prep_LaCazotte2023$t_final,
+  lambda_hat = off_LaCazotte2023$lambda_hat,
+  d_min = 1,
+  B = 200,
+  alpha = 0.05,
+  seed = 123
+)
+
+res_LaCazotte2023 <- compare_and_plot_algorithms(
+  dat_epic = prep_LaCazotte2023$dat_epic,
+  t_final = prep_LaCazotte2023$t_final,
+  off = off_LaCazotte2023,
+  on = on_LaCazotte2023,
+  dataset_name = "La Cazotte 2023",
+  time_unit = "days"
+)
+```
+
+### La Cazotte 2024
+
+```{r}
+prep_LaCazotte2024 <- prepare_algorithm_data(
+  dat =LaCazotte2024,
+  time_unit = "days"
+)
+
+off_LaCazotte2024 <- run_offline(
+  dat_epic = prep_LaCazotte2024$dat_epic,
+  t_final = prep_LaCazotte2024$t_final,
+  nprec = 50,
+  alpha = 0.05,
+  nb_MC = 500,
+  seed = 123
+)
+
+on_LaCazotte2024 <- run_online(
+  dat_epic = prep_LaCazotte2024$dat_epic,
+  t_final = prep_LaCazotte2024$t_final,
+  lambda_hat = off_LaCazotte2024$lambda_hat,
+  d_min = 1,
+  B = 200,
+  alpha = 0.05,
+  seed = 123
+)
+
+res_LaCazotte2024 <- compare_and_plot_algorithms(
+  dat_epic = prep_LaCazotte2024$dat_epic,
+  t_final = prep_LaCazotte2024$t_final,
+  off = off_LaCazotte2024,
+  on = on_LaCazotte2024,
+  dataset_name = "La Cazotte 2024",
+  time_unit = "days"
+)
+```
+
+###Epic
+
+```{r}
+data(ewe2014)
+
+epic2014 <- ewe2014 %>%
+  ungroup() %>%
+  transmute(
+    ID_belier = as.character(numAlpha),
+    ID_brebis = as.character(RFID),
+    time = Day
+  ) %>%
+  as.data.frame()
+
+prep_epic2014 <- prepare_algorithm_data(
+  dat =epic2014,
+  time_unit = "days"
+)
+
+off_epic2014 <- run_offline(
+  dat_epic = prep_epic2014$dat_epic,
+  t_final = prep_epic2014$t_final,
+  nprec = 50,
+  alpha = 0.05,
+  nb_MC = 500,
+  seed = 123
+)
+
+on_epic2014 <- run_online(
+  dat_epic = prep_epic2014$dat_epic,
+  t_final = prep_epic2014$t_final,
+  lambda_hat = off_epic2014$lambda_hat,
+  d_min = 1,
+  B = 200,
+  alpha = 0.05,
+  seed = 123
+)
+
+res_epic2014 <- compare_and_plot_algorithms(
+  dat_epic = prep_epic2014$dat_epic,
+  t_final = prep_epic2014$t_final,
+  off = off_epic2014,
+  on = on_epic2014,
+  dataset_name = "epic2014",
+  time_unit = "days"
+)
+```
+
+# III. Comparasion avec résultat d'IA
+In this section, we use the previously obtained S_offline data and the AIbdatasets to discuss and analyze the relationship between the changed-point and the information derived from the AI.
+
+In particular, we perform three analyses:
+
+1. We plot the timeline of the estimated change point $S$ offiline, the manual heat date, and the AI date for each ewe.
+
+2. We compute the AI success rate when the AI date occurs within 0–35 hours after the estimated change point $S$.
+
+3. We compare the time difference between the estimated change point $S$ and the manual heat date.
+
+## 1. General function 
+
+We first import the IA data. Each file rda contain: "ID_brebis", "Jour IA", "result IA","date predect chaleur manuelle")
+
+```{r}
+rda_dir_IA <- file.path("..", "Data", "rda_IA")
+rda_files_IA <- list.files(
+  rda_dir_IA,
+  pattern = "\\.rda$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+invisible(lapply(rda_files_IA, load, envir = .GlobalEnv))
+
+datasets_info_IA <- data.frame(
+  dataset = tools::file_path_sans_ext(basename(rda_files_IA))
+)
+```
+
+A common function to link the IA dataset and the prediction  S_offline  based on "ID brebis".
+
+```{r}
+make_offline_IA_table <- function(compare_tab, prep, IA_table,
+                                  time_unit = "hours") {
+  
+  scale_time <- ifelse(time_unit == "hours", 3600, 3600 * 24)
+  
+  IA_table <- as.data.frame(IA_table)
+  
+  names(IA_table)[1:4] <- c("ID_brebis", "Jour IA", "result IA", "date chaleur manuelle")
+
+  IA_table <- IA_table %>%
+    mutate(
+      ID_brebis = trimws(as.character(ID_brebis)),
+      `Jour IA` = parse_time(`Jour IA`),
+      `date chaleur manuelle` = parse_time(`date chaleur manuelle`),
+      `result IA` = ifelse(is.na(`result IA`), 0, `result IA`)
+    ) %>%
+    distinct(ID_brebis, .keep_all = TRUE)
+  
+  compare_tab %>%
+    transmute(
+      ID_brebis = trimws(as.character(id)),
+      S_offline = S_offline,
+      S_offline_datetime = parse_time(prep$day_start) + S_offline * scale_time
+    ) %>%
+    left_join(IA_table, by = "ID_brebis") %>%
+    mutate(
+      `result IA` = ifelse(is.na(`result IA`), 0, `result IA`)
+    ) %>%
+    select(
+      ID_brebis,
+      S_offline,
+      S_offline_datetime,
+      `Jour IA`,
+      `result IA`,
+      `date chaleur manuelle`
+    )
+}
+```
+
+The function below compares the offline estimated change point $S$ with the manual heat date.
+
+It returns a summary table with: the total number of ewes, the number detected by the offline method, the number detected manually, the number not detected by either method, and the mean and variance of the absolute time difference between $S$  and manual heat among ewes detected by both methods.
+
+```{r}
+compare_offline_with_manual_heat <- function(data) {
+
+  data <- data %>%
+    mutate(
+      S_offline_datetime = parse_time(S_offline_datetime),
+      `date chaleur manuelle` = parse_time(`date chaleur manuelle`)
+    )
+
+  T_offline <- max(data$S_offline, na.rm = TRUE)
+  T_datetime <- data$S_offline_datetime[which.max(data$S_offline)]
+
+  data %>%
+    mutate(
+      S_detected = S_offline < T_offline,
+      manual_detected = !is.na(`date chaleur manuelle`),
+
+      manual_date = `date chaleur manuelle`,
+      manual_date = replace(manual_date, is.na(manual_date), T_datetime),
+
+      delta_h = as.numeric(difftime(
+        manual_date,
+        S_offline_datetime,
+        units = "hours"
+      )),
+
+      abs_delta_h = abs(delta_h)
+    ) %>%
+    summarise(
+      total_ewe = n(),
+
+      n_S_detected = sum(S_detected, na.rm = TRUE),
+
+      n_manual_detected = sum(manual_detected, na.rm = TRUE),
+
+      n_S_equal_T_manual_equal_T = sum(
+        !S_detected & !manual_detected,
+        na.rm = TRUE
+      ),
+
+      mean_abs_diff_h_without_T = mean(
+        abs_delta_h[S_detected & manual_detected],
+        na.rm = TRUE
+      ),
+
+      var_abs_diff_h_without_T = var(
+        abs_delta_h[S_detected & manual_detected],
+        na.rm = TRUE
+      )
+    ) %>%
+    mutate(across(where(is.numeric), ~ round(.x, 2)))
+}
+```
+
+The function below computes the AI success rate for inseminations performed between 0 and 35 hours after the offline estimated change point $S$.
+
+It returns a table with three values: `n`, the number of IA cases in this window; `n_success`, the number of successful IA cases; and `percent`, the success percentage.
+
+```{r}
+success_by_ai_window <- function(data,interval=35) {
+  
+  data <- data %>%
+    mutate(
+      S_offline_datetime = parse_time(S_offline_datetime),
+      `Jour IA` = parse_time(`Jour IA`)
+    )
+  
+  data %>%
+    filter(
+      !is.na(S_offline),
+      !is.na(S_offline_datetime),
+      !is.na(`Jour IA`),
+      `result IA` %in% c(-1, 1)
+    ) %>%
+    transmute(
+      delta_h = as.numeric(difftime(
+        `Jour IA`,
+        S_offline_datetime,
+        units = "hours"
+      )),
+      success = as.integer(`result IA` == 1)
+    ) %>%
+    filter(delta_h >= 0, delta_h <= interval) %>%
+    summarise(
+      n = n(),
+      n_success = sum(success == 1),
+      percent = round(100 * mean(success), 1)
+    )
+}
+```
+
+The function below plots the timeline for all individuals. Each row corresponds to one ewe, and each point represents one event date.
+
+If the point is red, it represents the offline estimated change point $S$ offline. If the point is blue, it represents the AI date. If the point is green, it represents the manual heat date. If the point is yellow, it means that at least two events occur at the same time for the same ewe.
+
+```{r}
+plot_individual_timeline <- function(data) {
+  
+  if (!"date chaleur manuelle" %in% names(data)) {
+    data$`date chaleur manuelle` <- as.POSIXct(NA, tz = "UTC")
+  }
+  
+  data %>%
+    mutate(
+      S_offline_datetime = parse_time(S_offline_datetime),
+      `Jour IA` = parse_time(`Jour IA`),
+      `date chaleur manuelle` = parse_time(`date chaleur manuelle`)
+    ) %>%
+    mutate(
+      T_offline = max(S_offline, na.rm = TRUE),
+      T_datetime = S_offline_datetime[which.max(S_offline)],
+      `date chaleur manuelle` = replace(
+        `date chaleur manuelle`,
+        is.na(`date chaleur manuelle`),
+        T_datetime
+      )
+    ) %>%
+    arrange(S_offline_datetime) %>%
+    transmute(
+      ID = as.character(ID_brebis),
+      `Offline S` = S_offline_datetime,
+      AI = `Jour IA`,
+      `Manual heat` = `date chaleur manuelle`
+    ) %>%
+    mutate(ID = factor(ID, levels = rev(unique(ID)))) %>%
+    pivot_longer(
+      cols = -ID,
+      names_to = "event",
+      values_to = "datetime"
+    ) %>%
+    filter(!is.na(datetime)) %>%
+    distinct(ID, event, datetime) %>%
+    group_by(ID, datetime) %>%
+    summarise(
+      event_plot = if (dplyr::n() > 1) "Overlap" else first(event),
+      .groups = "drop"
+    ) %>%
+    ggplot(aes(x = datetime, y = ID, colour = event_plot)) +
+    geom_point(size = 2.8) +
+    scale_colour_manual(
+      values = c(
+        "Offline S" = "red",
+        "AI" = "blue",
+        "Manual heat" = "darkgreen",
+        "Overlap" = "yellow"
+      )
+    ) +
+    labs(
+      title = "Timeline of offline S, AI, and manual heat",
+      subtitle = "Missing manual heat dates are plotted at T",
+      x = "Time",
+      y = "Ewe ID",
+      colour = "Event"
+    ) +
+    theme_minimal()
+}
+```
+
+## 2. Create the IA tables and plot the timelines 
+
+### Corse 24
+
+```{r}
+offline_IA_Corse24 <- make_offline_IA_table(
+  compare_tab = res_corse24$compare,
+  prep = prep_corse24,
+  IA_table =Corse2024_IA,
+  time_unit = "hours"
+)
+```
+
+```{r}
+plot_individual_timeline(offline_IA_Corse24)
+```
+
+### Corse 25
+
+```{r}
+offline_IA_Corse25 <- make_offline_IA_table(
+  compare_tab = res_corse25$compare,
+  prep = prep_corse25,
+  IA_table = Corse2025_IA,
+  time_unit = "hours"
+)
+
+```
+
+```{r}
+plot_individual_timeline(offline_IA_Corse25)
+```
+
+### La fage 2023
+
+```{r}
+offline_IA_LaFage2023 <- make_offline_IA_table(
+  compare_tab = res_LaFage2023$compare,
+  prep = prep_LaFage2023,
+  IA_table = LaFage2023_IA,
+  time_unit = "hours"
+)
+
+```
+```{r}
+plot_individual_timeline(offline_IA_LaFage2023)
+```
+
+
+###  La fage 2025
+
+```{r}
+offline_IA_LaFage2025 <- make_offline_IA_table(
+  compare_tab = res_LaFage2025$compare,
+  prep = prep_LaFage2025,
+  IA_table = LaFage2025_IA,
+  time_unit = "days"
+)
+
+```
+
+```{r}
+plot_individual_timeline(offline_IA_LaFage2025)
+```
+
+### La Cazzote 2023
+
+```{r}
+offline_IA_LaCazotte2023 <- make_offline_IA_table(
+  compare_tab = res_LaCazotte2023$compare,
+  prep = prep_LaCazotte2023,
+  IA_table = LaCazotte2023_IA,
+  time_unit = "days"
+)
+
+```
+```{r}
+plot_individual_timeline(offline_IA_LaCazotte2023)
+```
+
+###  La Cazzote 2024
+
+```{r}
+offline_IA_LaCazotte2024 <- make_offline_IA_table(
+  compare_tab = res_LaCazotte2024$compare,
+  prep = prep_LaCazotte2024,
+  IA_table = LaCazotte2024_IA,
+  time_unit = "days"
+)
+```
+```{r}
+plot_individual_timeline(offline_IA_LaCazotte2024)
+```
+
+## 3. Compare tables and conclusion
+
+```{r}
+offline_IA_tables <- list(
+  Corse24 = offline_IA_Corse24,
+  Corse25 = offline_IA_Corse25,
+  LaCazotte2023 = offline_IA_LaCazotte2023,
+  LaCazotte2024 = offline_IA_LaCazotte2024,
+  LaFage2023 = offline_IA_LaFage2023,
+  LaFage2025 = offline_IA_LaFage2025
+)
+```
+
+```{r}
+summary_manual_heat <- imap_dfr(offline_IA_tables, function(x, name) {
+  
+  if (!"date chaleur manuelle" %in% names(x)) {
+    x$`date chaleur manuelle` <- as.POSIXct(NA, tz = "UTC")
+  }
+  
+  bind_cols(
+    tibble(dataset = name),
+    compare_offline_with_manual_heat(x)
+  )
+})
+
+DT::datatable(
+  summary_manual_heat,
+  options = list(scrollX = TRUE, pageLength = 10)
+)
+```
+
+```{r}
+summary_IA_success <- imap_dfr(offline_IA_tables, function(x, name) {
+  
+  bind_cols(
+    tibble(dataset = name),
+    success_by_ai_window(x) %>%
+      rename(
+        IA_n_0_35h = n,
+        IA_n_success_0_35h = n_success,
+        IA_success_percent_0_35h = percent
+      )
+  )
+})
+
+DT::datatable(
+  summary_IA_success,
+  options = list(scrollX = TRUE, pageLength = 10)
+)
+```
+
+General comments:
+
+When both the algorithm and manual observation detect heat, the estimated change point $S$ is generally close to the manual heat date. However, the algorithm tends to classify more cases as no rupture compared with manual observation.
+
+The AI success rate within 0–35 hours after the estimated $S$ is relatively high, except for Corse 2025.
+
+
+
