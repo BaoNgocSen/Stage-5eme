@@ -43,7 +43,7 @@ library(purrr)
 We first import the datasets. Each file rda contain: "ID belier", "ID brebis", moment of each chevauchement"
 ```{r}
 
-rda_dir <- "/home/nguyenngoc/Nguyen_Ngoc/stage-de-ngoc/Data/rda_effet_male"
+rda_dir <- file.path("..", "Data", "rda_effet_male")
 
 rda_files <- list.files(
   rda_dir,
@@ -753,8 +753,7 @@ In particular, we perform three analyses:
 We first import the IA data. Each file rda contain: "ID_brebis", "Jour IA", "result IA","date predect chaleur manuelle")
 
 ```{r}
-rda_dir_IA <- "/home/nguyenngoc/Nguyen_Ngoc/stage-de-ngoc/Data/rda_IA"
-
+rda_dir_IA <- file.path("..", "Data", "rda_IA")
 rda_files_IA <- list.files(
   rda_dir_IA,
   pattern = "\\.rda$",
@@ -874,7 +873,7 @@ The function below computes the AI success rate for inseminations performed betw
 It returns a table with three values: `n`, the number of IA cases in this window; `n_success`, the number of successful IA cases; and `percent`, the success percentage.
 
 ```{r}
-success_by_ai_window <- function(data) {
+success_by_ai_window <- function(data,interval=35) {
   
   data <- data %>%
     mutate(
@@ -897,7 +896,7 @@ success_by_ai_window <- function(data) {
       )),
       success = as.integer(`result IA` == 1)
     ) %>%
-    filter(delta_h >= 0, delta_h <= 35) %>%
+    filter(delta_h >= 0, delta_h <= interval) %>%
     summarise(
       n = n(),
       n_success = sum(success == 1),
