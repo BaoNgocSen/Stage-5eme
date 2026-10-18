@@ -1,7 +1,7 @@
 #--------------------------------------------------------------------
-# Detect break points in a marked Poisson point process with  lambda and mu known
+# Detect break points in a marked Poisson point process with lambda and mu known
 #--------------------------------------------------------------------
-# sim_changepointPP_m: simulate events for one ewe and multiple rams
+# sim_changepointPP_m: simulate events for multiple rams
 # loglikelihood_m: compute the log-likelihood for one ewe 
 # rebuildlambdamu_m: rebuild ram-specific lambda and mu from S 
 # rebuildS_L_m: rebuild S by likelihood maximisation
@@ -9,22 +9,17 @@
 # detectS_BH_m: finally function
 #--------------------------------------------------------------------
 
-#' Function that simulates the Marked Poisson Point Process with a break point
-#'
-#' @param tau0 Numeric . Time of the break point.
-#' @param lambda Numeric matrix with one row per ram and two columns.
-#'   Column 1: event rates before the break point and column 2: event rates after the break point.
-#' @param mu Column 1: exponential mark rates before the break point, column 2:  rates after the break point.
-#' @param t_final Numeric. Final observation time.
-#' @return A tibble with columns `time`, `marks`, `state`, and `numAlpha`.
 
+# Simulation des processus de Poisson avec :
+# tau0 : liste des points de rupture ( pour leng(tau0) beliers)
+# lambda : liste des intensités
+# mu : liste des paramètres des marques
+# t_final : temps final d'observation
 
 sim_changepointPP_m <- function(tau0, lambda, mu, t_final) {
  
   n_ram <- nrow(lambda)
-  ram_labels <- rownames(lambda)
-  
-  list_rams <- lapply(seq_len(n_ram), function(r) {
+  out <- lapply(seq_len(n_ram), function(r) {
 
     N_minus <- rpois(n = 1, lambda = lambda[r, 1] * tau0)
     N_plus  <- rpois(n = 1, lambda = lambda[r, 2] * (t_final - tau0))
@@ -39,31 +34,24 @@ sim_changepointPP_m <- function(tau0, lambda, mu, t_final) {
       time     = c(time_minus, time_plus),
       marks    = c(marks_minus, marks_plus),
       state    = as.factor(c(rep(0, N_minus), rep(1, N_plus))),
-      numAlpha = ram_labels[r]
+      numAlpha = r
     )
   })
   
-  out <- dplyr::bind_rows(list_rams)
-  out <- dplyr::arrange(out, .data$time)
-  out
+  out<-dplyr::bind_rows(out)
 }
 
 #-------------------------------------------------------------------
-#' Compute the log-likelihood for one ewe
-#'
-#' @param lambda Numeric matrix with one row per ram and two columns of event
-#'   rates: before and after the candidate break point.
-#' @param mu Numeric matrix with one row per ram and two columns of exponential
-#'   mark rates: before and after the candidate break point.
-#' @param S Numeric scalar. Candidate break-point time.
-#' @param time Numeric vector of event times for one ewe, ordered increasingly.
-#' @param U Numeric vector of event marks in the same order as `time`.
-#' @param ram Vector of ram identifiers in the same order as `time`.
-#' @param t_final Numeric scalar. Final observation time.
-#' @return A numeric scalar containing the log-likelihood.
+# Calculer la log-vraisemblance pour une brebis
+# lambda : matrice avec ligne par bélier et deux colonnes d'intensité
+# mu : matrice avec ligne par bélier et deux colonnes de paramètres exponentiels
+# S :  Temps de rupture candIDat.
+# time : vecteur  des temps d'événements pour une brebis, dans l'ordre croissant.
+# U : vecteur  des marques
+# ram : vecteur des béliers
+# t_final :  Temps final d'observation.
 
 loglikelihood_m <- function(lambda, mu, S, time, U, ram, t_final){
-  # Standardise ram identifiers and determine the total number of events
   ram <- as.character(ram)
   ntot <- length(time)
   
@@ -72,68 +60,62 @@ loglikelihood_m <- function(lambda, mu, S, time, U, ram, t_final){
   }
   
   L0 <- sum((lambda[,2] - lambda[,1]) * S - t_final * lambda[,2])
+  IDx_before <- which(time < S)
+  IDx_equal  <- which(time == S)
+  IDx_after  <- which(time > S)
   
-  idx_before <- which(time < S)
-  idx_equal  <- which(time == S)
-  idx_after  <- which(time > S)
-  
-  # Case 1: events occurring exactly at S belong to the pre-break 
-  idx_before_1 <- c(idx_before, idx_equal)
-  idx_after_1  <- idx_after
-  
+  # Case 1: events at S belong to the pre-break 
+  IDx_before_1 <- c(IDx_before, IDx_equal)
+  IDx_after_1  <- IDx_after
   L_right <- L0
   
-  if (length(idx_before_1) > 0){
+  if (length(IDx_before_1) > 0){
     L_right <- L_right +
-      sum(log(lambda[ram[idx_before_1], 1] * mu[ram[idx_before_1], 1])) -
-      sum(mu[ram[idx_before_1], 1] * U[idx_before_1], na.rm = TRUE)
+      sum(log(lambda[ram[IDx_before_1], 1] * mu[ram[IDx_before_1], 1])) -
+      sum(mu[ram[IDx_before_1], 1] * U[IDx_before_1], na.rm = TRUE)
   }
   
-  if (length(idx_after_1) > 0){
+  if (length(IDx_after_1) > 0){
     L_right <- L_right +
-      sum(log(lambda[ram[idx_after_1], 2] * mu[ram[idx_after_1], 2])) -
-      sum(mu[ram[idx_after_1], 2] * U[idx_after_1], na.rm = TRUE)
+      sum(log(lambda[ram[IDx_after_1], 2] * mu[ram[IDx_after_1], 2])) -
+      sum(mu[ram[IDx_after_1], 2] * U[IDx_after_1], na.rm = TRUE)
   }
   
-  # Without an event exactly at S, the allocation is unambiguous
-  if (length(idx_equal) == 0){
+  # Without an event exactly at S
+  if (length(IDx_equal) == 0){
     return(L_right)
   }
   
-  # Case 2: events occurring exactly at S belong to the post-break regime
-  idx_before_2 <- idx_before
-  idx_after_2  <- c(idx_equal, idx_after)
-  
+  # Case 2: events  at S belong to the post-break regime
+  IDx_before_2 <- IDx_before
+  IDx_after_2  <- c(IDx_equal, IDx_after)
   L_left <- L0
 
-  if (length(idx_before_2) > 0){
+  if (length(IDx_before_2) > 0){
     L_left <- L_left +
-      sum(log(lambda[ram[idx_before_2], 1] * mu[ram[idx_before_2], 1])) -
-      sum(mu[ram[idx_before_2], 1] * U[idx_before_2], na.rm = TRUE)
+      sum(log(lambda[ram[IDx_before_2], 1] * mu[ram[IDx_before_2], 1])) -
+      sum(mu[ram[IDx_before_2], 1] * U[IDx_before_2], na.rm = TRUE)
   }
   
-  if (length(idx_after_2) > 0){
+  if (length(IDx_after_2) > 0){
     L_left <- L_left +
-      sum(log(lambda[ram[idx_after_2], 2] * mu[ram[idx_after_2], 2])) -
-      sum(mu[ram[idx_after_2], 2] * U[idx_after_2], na.rm = TRUE)
+      sum(log(lambda[ram[IDx_after_2], 2] * mu[ram[IDx_after_2], 2])) -
+      sum(mu[ram[IDx_after_2], 2] * U[IDx_after_2], na.rm = TRUE)
   }
   
   return(max(L_right, L_left))
 }
 
 #-----------------------------------------------------------
-#' Rebuild ram-specific lambda and mu parameters
-#'
-#' @param datain Input data frame containing  `id`, `time`, `marks` and `numAlpha`.
-#' @param S Numeric vector of estimated break points.
-#' @param t_final Numeric scalar. Final observation time.
-#' @return A list with two elements: `lambda`, an `n_ram` by 2 matrix of event
-#'   rates, and `mu`, an `n_ram` by 2 matrix of mark rates. Columns correspond
-#'   to the periods before and after the break point.
-
+# Reconstruire les paramètres lambda et mu pour chaque bélier
+# datain : données d'entrée contenant `ID`, `time`, `marks` et `numAlpha`.
+# S : vecteur numérique des points de rupture estimés.
+# t_final : temps final d'observation.
+# @return Une liste contenant deux matrices  de dimension n_ram x 2 : `lambda` et `mu`
+         
 rebuildlambdamu_m <- function(datain, S, t_final){
-  ids <- sort(unique(datain$id))
-  nb_indiv <- length(ids)
+  IDs <- sort(unique(datain$ID))
+  nb_indiv <- length(IDs)
   ram_levels <- sort(unique(as.character(datain$numAlpha)))
   n_ram <- length(ram_levels)
 
@@ -149,9 +131,9 @@ rebuildlambdamu_m <- function(datain, S, t_final){
   names(SommeUApres) <- ram_levels
   
 
-  for (ii in seq_along(ids)){
-    ind <- ids[ii]
-    ewe_ind <- datain[datain$id == ind, ]
+  for (ii in seq_along(IDs)){
+    ind <- IDs[ii]
+    ewe_ind <- datain[datain$ID == ind, ]
     SommeS <- SommeS + S[ii]
     
     if (nrow(ewe_ind) > 0){
@@ -162,29 +144,29 @@ rebuildlambdamu_m <- function(datain, S, t_final){
       ram <- as.character(ewe_ind$numAlpha)
       
   
-      idx_avant <- which(sauts < S[ii])
-      idx_apres <- which(sauts >= S[ii])
+      IDx_avant <- which(sauts < S[ii])
+      IDx_apres <- which(sauts >= S[ii])
 
-      if (length(idx_avant) > 0){
-        ram_avant <- ram[idx_avant]
-        U_avant <- U[idx_avant]
+      if (length(IDx_avant) > 0){
+        ram_avant <- ram[IDx_avant]
+        U_avant <- U[IDx_avant]
         
         tab_avant <- table(factor(ram_avant, levels = ram_levels))
         SommeSautAvant <- SommeSautAvant + as.numeric(tab_avant)
         
-        for (j in seq_along(idx_avant)){
+        for (j in seq_along(IDx_avant)){
           SommeUAvant[ram_avant[j]] <- SommeUAvant[ram_avant[j]] + U_avant[j]
         }
       }
   
-      if (length(idx_apres) > 0){
-        ram_apres <- ram[idx_apres]
-        U_apres <- U[idx_apres]
+      if (length(IDx_apres) > 0){
+        ram_apres <- ram[IDx_apres]
+        U_apres <- U[IDx_apres]
         
         tab_apres <- table(factor(ram_apres, levels = ram_levels))
         SommeSautApres <- SommeSautApres + as.numeric(tab_apres)
         
-        for (j in seq_along(idx_apres)){
+        for (j in seq_along(IDx_apres)){
           SommeUApres[ram_apres[j]] <- SommeUApres[ram_apres[j]] + U_apres[j]
         }
       }
@@ -197,7 +179,7 @@ rebuildlambdamu_m <- function(datain, S, t_final){
   if (denom_before_time <= 0) denom_before_time <- 1
   if (denom_after_time <= 0) denom_after_time <- 1
   
-  # Avoid 0/0
+  # AvoID 0/0
   for (r in seq_len(n_ram)){
     if (SommeSautAvant[r] == 0) SommeUAvant[r] <- 1
     if (SommeSautApres[r] == 0) SommeUApres[r] <- 1
@@ -229,7 +211,7 @@ rebuildlambdamu_m <- function(datain, S, t_final){
 #'   current event-rate estimates.
 #' @param mun Numeric matrix with one row per ram and two columns of current
 #'   mark-rate estimates.
-#' @param ewe Data frame containing `id`, `time`, `marks`, and  `numAlpha`.
+#' @param ewe Data frame containing `ID`, `time`, `marks`, and  `numAlpha`.
 #' @param t_final Numeric scalar. Final observation time.
 #' @return  the  break-point vector and the  likelihood differences `l1 - l0`.
 
@@ -239,12 +221,12 @@ rebuildS_L_m <- function(lambdan, mun, ewe, t_final){
   l0 <- c()
   l1 <- c()
   
-  ids <- sort(unique(ewe$id))
-  nb_indiv <- length(ids)
+  IDs <- sort(unique(ewe$ID))
+  nb_indiv <- length(IDs)
   
-  for (ii in seq_along(ids)){
-    ind <- ids[ii]
-    ewe_ind <- ewe[ewe$id == ind, ]
+  for (ii in seq_along(IDs)){
+    ind <- IDs[ii]
+    ewe_ind <- ewe[ewe$ID == ind, ]
     ntot <- nrow(ewe_ind)
     
     if (ntot == 0){
@@ -291,7 +273,7 @@ rebuildS_L_m <- function(lambdan, mun, ewe, t_final){
 #-----------------------------------------------------------------------
 #' Rebuild break points using Monte Carlo p-values and BH correction
 #'
-#' @param datain Input data frame containing `id`, `time`, `marks`, and `numAlpha`.
+#' @param datain Input data frame containing `ID`, `time`, `marks`, and `numAlpha`.
 #' @param alpha Numeric scalar. Target threshold
 #' @param nb_MC Positive integer. Number of Monte Carlo samples
 #' @param lambdan Numeric matrix with one row per ram and two event-rate columns.
@@ -301,7 +283,7 @@ rebuildS_L_m <- function(lambdan, mun, ewe, t_final){
 
 rebuildS_BH_m <- function(datain, alpha, nb_MC, lambdan, mun, t_final){
   # Parametric Monte Carlo simulation under H0: tau0 equals t_final
-  list_individuals <- lapply(seq_len(nb_MC), function(i){
+  list_indivIDuals <- lapply(seq_len(nb_MC), function(i){
     tau0 <- t_final
     ewe_MC <- sim_changepointPP_m(
       tau0    = tau0,
@@ -311,7 +293,7 @@ rebuildS_BH_m <- function(datain, alpha, nb_MC, lambdan, mun, t_final){
     )
     
     if (nrow(ewe_MC) > 0) {
-      ewe_MC$id <- i
+      ewe_MC$ID <- i
       ewe_MC$tau <- tau0
     } else {
       ewe_MC <- tibble::tibble(
@@ -319,14 +301,14 @@ rebuildS_BH_m <- function(datain, alpha, nb_MC, lambdan, mun, t_final){
         marks    = numeric(0),
         state    = factor(levels = c(0, 1)),
         numAlpha = if (is.null(rownames(lambdan))) character(0) else character(0),
-        id       = integer(0),
+        ID       = integer(0),
         tau      = numeric(0)
       )
     }
     ewe_MC
   })
   
-  ewe_MC <- do.call(rbind, list_individuals)
+  ewe_MC <- do.call(rbind, list_indivIDuals)
   
   Sl_data <- rebuildS_L_m(lambdan, mun, datain, t_final)
   Sl_MC   <- rebuildS_L_m(lambdan, mun, ewe_MC, t_final)
@@ -335,8 +317,8 @@ rebuildS_BH_m <- function(datain, alpha, nb_MC, lambdan, mun, t_final){
   l_MC   <- Sl_MC[[2]]    
   S      <- Sl_data[[1]]  
   
-  ids_data <- sort(unique(datain$id))
-  nb_indiv <- length(ids_data)
+  IDs_data <- sort(unique(datain$ID))
+  nb_indiv <- length(IDs_data)
   
   pvalue <- numeric(nb_indiv)
   
@@ -367,7 +349,7 @@ rebuildS_BH_m <- function(datain, alpha, nb_MC, lambdan, mun, t_final){
 #-----------------------------------------------------------
 #' Detect break points with ram-specific parameters and BH correction
 #'
-#' @param datain Input data frame containing `id`, `time`, `marks`, and  `numAlpha`.
+#' @param datain Input data frame containing `ID`, `time`, `marks`, and  `numAlpha`.
 #' @param lambda0 Numeric matrix with one row per ram and two columns containing
 #'   the initial event-rate estimates before and after the break point.
 #' @param mu0 Numeric matrix with one row per ram and two columns containing the

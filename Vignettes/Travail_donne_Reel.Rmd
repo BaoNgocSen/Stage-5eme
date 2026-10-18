@@ -1,0 +1,125 @@
+---
+title: "Travail_donne_Reel"
+output: html_document
+---
+Dans ce markdown, on va appliquer les functions de 3 types:
+
+- Offline algorithme avec effet male
+- Online algorithme avec les paramètres connus
+- Online algorithme avec les paramètres inconnus
+
+sur les données réelles du chevauchement des béliers et des brebis.
+
+D'abord, on prépare les bibliothèques nécessaires pour l'exécution.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  include = TRUE,
+  message = FALSE,
+  echo = TRUE
+)
+
+options(
+  width = 1000,
+  tibble.width = Inf,
+  tibble.print_max = Inf,
+  dplyr.print_max = Inf
+)
+```
+
+```{r}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(epic)
+source("../R/E_detecteur.R")
+source("../R/Online_mul_ram.R")
+source("../R/epic_ram.R")
+```
+
+# I. Analyse des données
+On tout d'abord importe les data 
+```{r, import data }
+Corse2024 <- read_excel("../Data/Corse2024-IA-FGA+EM/Corse2024-DataIA.xlsx",  sheet = "Données Brutes")
+Corse2025 <- read_excel("../Data/Corse2025-IA-FGA+EM/Corse2025-DataIA.xlsx", sheet = "All Data")
+LaCazotte2023<-read_excel("../Data/LaCazotte2023-IA-FGA+EM/LaCazotte2023-EffetMâle.xlsx", sheet = "Données brutes")
+LaCazotte2024 <- read_excel("../Data/LaCazotte2024-IA-FGA+EM/LaCazotte2024-EffetMâle.xlsx", sheet = "Données brute EM")
+LaFage2025 <- read_excel("../Data/LaFage2025-IA-EffetMâle/LaFage2025-DataEffetBélier.xlsx",    sheet = "Data Effet Bélier Brutes")
+LaFage2023 <- read_excel("../Data/LaFage2023-IA-FGA+EM/LaFage2023-DataIA.xlsx",   sheet = "Data Bélier")
+```
+
+```{r, take infor}
+Corse2024<-Corse2024[,c("ID","Alpha","DATE (dd_mm_yyyy)")]
+Corse2025<-Corse2025[,c(2,3,8)]
+LaCazotte2023<-LaCazotte2023[,c("ID","Bélier","DATE (dd_mm_yyyy)2")]
+LaCazotte2024<-LaCazotte2024[,c("ID","Alpha","DATE (dd_mm_yyyy)")]
+LaFage2023<-LaFage2023[,c("ID","Alpha","DATE (dd_mm_yyyy)")]
+LaFage2025<-LaFage2025[,c("ID","Alpha","DATE (dd_mm_yyyy)")]
+
+```
+
+```{r}
+data <- list(
+  Corse2024 = Corse2024,
+  Corse2025 = Corse2025,
+  LaCazotte2023 = LaCazotte2023,
+  LaCazotte2024 = LaCazotte2024,
+  LaFage2023 = LaFage2023,
+  LaFage2025 = LaFage2025
+)
+```
+
+Pour faciliter, on synchronise les noms de chaque colonne :
+  - Première colonne : ID - ID de la brebis correspondant au chevauchement
+
+  - Deuxième colonne : Alpha - Nom de la brebis correspondant au chevauchement
+
+  - Troisième colonne : Event - Moment du chevauchement
+  
+
+
+```{r}
+for (i in names(data)) {
+  names(data[[i]]) <- c("ID", "Alpha", "Event")
+  cat(i, ":\n")
+  print(sapply(data[[i]], class))
+}
+```
+On peut voir que les moments dans les données "LaFage2023" sont en format character, on doit donc changer ça en POSIXct.
+```{r}
+data[[5]]$Event <- as.POSIXct(
+  data[[5]]$Event,
+  format = "%d %m %Y %H:%M:%S"
+)
+class(data[[5]]$Event)
+```
+On a ci-dessous les informations  
+```{r}
+resume <- data.frame()
+for (i in names(data)){
+  num_brebis <- length(unique(data[[i]]$ID))
+  num_belier <- length(unique(data[[i]]$Alpha))
+  num_day <-  1+ ceiling(as.numeric( difftime(max(data[[i]]$Event), 
+                               min(data[[i]]$Event), 
+                               units = "days" )))
+  day_begin <-min(data[[i]]$Event)
+  day_end <-max(data[[i]]$Event)
+  resume<- bind_rows(resume,
+                     data.frame(
+                       i,
+                       num_belier,
+                       num_brebis,
+                       day_begin,
+                       day_end,
+                       num_day))
+  
+}
+resume
+```
+
+```{r}
+min(data[[]]$Event)
+max(data[[5]]$Event)
+```
+

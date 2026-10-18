@@ -1,0 +1,285 @@
+---
+title: "E_Detecteur"
+output: html_document
+---
+##1. Import library
+```{r}
+library(dplyr)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+source("epic_ram.R")
+source("Online_mul_ram.R")
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(plotly)
+library(epic)
+library(purrr)
+```
+
+
+```{r}
+source("../R/E_Detecteur.R")
+```
+##2. Simulation
+```{r}
+result <- NULL
+for (i in (1:100)){
+  t_final=40
+  changpoint=26
+  data<-sim_changepointPP(changpoint,c(0.5,3),t_final)
+  d0=20
+  W=40
+  alpha=0.05
+  lamb0<-intensity(data,0,d0,t_final)
+  lamb0
+  x<-Alarme_SR(data,lamb0,d0,W,alpha,t_final,Vesbose=FALSE)
+  result <- rbind(result,c(lamb0,abs(x-changpoint)))}
+```
+
+```{r}
+summary(result)
+```
+```{r}
+
+rda_dir <- file.path("..", "Data", "rda_effet_male")
+
+rda_files <- list.files(
+  rda_dir,
+  pattern = "\\.rda$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+invisible(lapply(rda_files, load, envir = .GlobalEnv))
+
+dataset = tools::file_path_sans_ext(basename(rda_files))
+
+dataset
+
+```
+
+Summary data
+
+```{r}
+result <- bind_rows(
+  lapply(dataset, function(dataset) {
+
+    dat <- as.data.frame(
+      get(dataset, envir = .GlobalEnv)
+    )
+
+    names(dat)[1:3] <- c("ID belier", "ID brebis","time")
+
+    dates <- as.Date(dat$time)
+    data.frame(
+      dataset = dataset,
+      nb_brebis = n_distinct(dat$`ID brebis`, na.rm = TRUE),
+      date_start = min(dates),
+      date_end = max(dates),
+      nb_days = as.numeric(max(dates) - min(dates)) + 1
+    )
+  })
+)
+
+result
+```
+```{r}
+Corse2025 <- Corse2025[order(Corse2025$time), ]
+Corse2025
+```
+
+
+# II. Application our algorithms to dataset
+## 1. Genaral function
+These functions below prepares the data for algorithms: standardizes column names, converts event timestamps to a unified time scale (hours or days), and sets markers for "before" and "after" (e.g., 1).
+
+
+```{r}
+prepare_algorithm_data <- function(dat, time_unit = "hours") {
+  
+  dat <- as.data.frame(dat)
+  names(dat)[1:3] <- c("ID_belier", "ID_brebis", "time")
+  
+  
+  day_start <- floor_date(min(dat$time, na.rm = TRUE), unit = "day")
+  day_end   <- ceiling_date(max(dat$time, na.rm = TRUE), unit = "day")
+  
+  if (time_unit == "hours") {
+    t_final <- as.numeric(difftime(day_end, day_start, units = "hours"))
+    scale_time <- 3600
+  } else {
+    t_final <- as.numeric(difftime(day_end, day_start, units = "days"))
+    scale_time <- 3600 * 24
+  }
+  
+  dat_epic <- dat %>%
+    mutate(
+      event_time = as.numeric(difftime(time, day_start, units = "secs")) / scale_time,
+      TIMES = 1
+    ) %>%
+transmute(
+  id_original = ID_brebis,
+  id = as.integer(factor(ID_brebis)),
+  id_char = as.character(ID_brebis),
+  time = as.numeric(event_time),
+  marks = as.numeric(TIMES),
+  numAlpha = as.character(ID_belier),
+  ram = as.character(ID_belier)
+    ) %>%
+    filter(
+      !is.na(id_original),
+      !is.na(id),
+      !is.na(time),
+      !is.na(marks),
+      !is.na(numAlpha)
+    ) %>%
+    arrange(id, time)
+  
+  list(
+    dat_epic = dat_epic,
+    t_final = t_final,
+    day_start = day_start,
+    day_end = day_end
+  )
+}
+```
+
+```{r}
+prep_fage23 <- prepare_algorithm_data(
+  dat = Corse2024,
+  time_unit = "hours"
+)
+```
+
+```{r}
+prep_corse24$dat_epic
+
+```
+
+```{r}
+d0=25
+data <- prep_corse24$dat_epic
+prep_corse24$t_final
+prep_corse24$dat_epic[prep_corse24$dat_epic$time <= d0,]
+lamb0<-nrow(prep_corse24$dat_epic[prep_corse24$dat_epic$time <= d0,])/(d0*length(unique(data$id)))
+lamb0
+```
+
+```{r}
+
+t_final<-prep_corse24$t_final
+W=24
+alpha=0.05
+for (i in unique(data$id)){
+  data_i<-data[data$id==i,]
+  x<-Alarme_SR(data_i,lamb0,d0,W,alpha,t_final,Vesbose=FALSE)
+  cat(data_i$id_original[1], ": alarm at ",x ,"\n")
+  
+}
+```
+
+```{r}
+prep_corse25<- prepare_algorithm_data(
+  dat = Corse2025,
+  time_unit = "hours"
+)
+
+```
+
+```{r}
+prep_corse25$t_final
+
+```
+```{r}
+d0=25
+data <- prep_corse25$dat_epic
+
+prep_corse25$dat_epic[prep_corse25$dat_epic$time <= d0,]
+lamb0<-nrow(prep_corse25$dat_epic[prep_corse25$dat_epic$time <= d0,])/(d0*length(unique(data$id)))
+lamb0
+```
+ 
+
+```{r}
+
+t_final<-prep_corse25$t_final
+W=24
+alpha=0.05
+for (i in unique(data$id)){
+  data_i<-data[data$id==i,]
+  x<-Alarme_SR(data_i,lamb0,d0,W,alpha,t_final,Vesbose=FALSE)
+  cat(data_i$id_original[1], ": alarm at ",x ,"\n")
+  
+}
+```
+```{r}
+prep_fage23 <- prepare_algorithm_data(
+  dat = LaFage2023,
+  time_unit = "hours"
+)
+```
+
+```{r}
+d0=25
+data <- prep_fage23$dat_epic
+prep_fage23$t_final
+prep_fage23$dat_epic[prep_fage23$dat_epic$time <= d0,]
+lamb0<-nrow(prep_fage23$dat_epic[prep_fage23$dat_epic$time <= d0,])/(d0*length(unique(data$id)))
+lamb0
+```
+
+```{r}
+
+t_final<-prep_fage23$t_final
+W=24
+alpha=0.05
+for (i in unique(data$id)){
+  data_i<-data[data$id==i,]
+  x<-Alarme_SR(data_i,lamb0,d0,W,alpha,t_final,Vesbose=FALSE)
+  cat(data_i$id_original[1], ": alarm at ",x ,"\n")
+  
+}
+```
+```{r}
+data_i<-data[data$id==32,]
+x<-Alarme_SR(data_i,lamb0,d0,W,alpha,t_final,Vesbose=FALSE)
+data_i
+cat(data_i$id_original[1], ": alarm at ",x ,"\n")
+```
+```{r}
+prep_cazotte24 <- prepare_algorithm_data(
+  dat = LaCazotte2024,
+  time_unit = "days"
+)
+```
+
+```{r}
+d0=0.7
+data <- prep_cazotte24$dat_epic
+prep_cazotte24$t_final
+prep_cazotte24$dat_epic[prep_cazotte24$dat_epic$time <= d0,]
+lamb0<-nrow(prep_cazotte24$dat_epic[prep_cazotte24$dat_epic$time <= d0,])/(d0*length(unique(data$id)))
+lamb0
+```
+
+```{r}
+
+t_final<-prep_cazotte24$t_final
+W=3
+alpha=0.05
+for (i in unique(data$id)){
+  data_i<-data[data$id==i,]
+  x<-Alarme_SR(data_i,lamb0,d0,W,alpha,t_final,Vesbose=FALSE)
+  cat(data_i$id_original[1], ": alarm at ",x ,"\n")
+  
+}
+```
+
+```{r}
+
+```
+
