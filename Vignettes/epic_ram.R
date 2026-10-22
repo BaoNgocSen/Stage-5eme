@@ -39,7 +39,7 @@ sim_changepointPP_m <- function(tau0, lambda, mu, t_final) {
       time     = c(time_minus, time_plus),
       marks    = c(marks_minus, marks_plus),
       state    = as.factor(c(rep(0, N_minus), rep(1, N_plus))),
-      numAlpha = ram_labels[r]
+      numAlpha = rep(ram_labels[r], N_minus + N_plus)
     )
   })
   

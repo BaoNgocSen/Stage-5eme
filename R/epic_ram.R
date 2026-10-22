@@ -1,4 +1,3 @@
-#--------------------------------------------------------------------
 # Detect break points in a marked Poisson point process with lambda and mu known
 #--------------------------------------------------------------------
 # sim_changepointPP_m: simulate events for multiple rams
@@ -7,18 +6,18 @@
 # rebuildS_L_m: rebuild S by likelihood maximisation
 # rebuildS_BH_m: compute Monte Carlo p-values and BH correction
 # detectS_BH_m: finally function
+  
 #--------------------------------------------------------------------
-
-
-# Simulation des processus de Poisson avec :
-# tau0 : liste des points de rupture ( pour leng(tau0) beliers)
+# Simulation les processus de Poisson avec :
+# tau0 : 1 rupture
 # lambda : liste des intensités
 # mu : liste des paramètres des marques
 # t_final : temps final d'observation
 
-sim_changepointPP_m <- function(tau0, lambda, mu, t_final) {
+sim_changepointPP_m<- function(tau0, lambda, mu, t_final) {
  
   n_ram <- nrow(lambda)
+  ram_labels <- rownames(lambda)
   out <- lapply(seq_len(n_ram), function(r) {
 
     N_minus <- rpois(n = 1, lambda = lambda[r, 1] * tau0)
@@ -30,15 +29,15 @@ sim_changepointPP_m <- function(tau0, lambda, mu, t_final) {
     marks_minus <- if (N_minus > 0) rexp(N_minus, rate = mu[r, 1]) else numeric(0)
     marks_plus  <- if (N_plus  > 0) rexp(N_plus,  rate = mu[r, 2]) else numeric(0)
     
-    tibble::tibble(
+    data.frame(
       time     = c(time_minus, time_plus),
       marks    = c(marks_minus, marks_plus),
       state    = as.factor(c(rep(0, N_minus), rep(1, N_plus))),
-      numAlpha = r
+      numAlpha = rep(ram_labels[r], N_minus + N_plus)
     )
   })
   
-  out<-dplyr::bind_rows(out)
+  out<-bind_rows(out)
 }
 
 #-------------------------------------------------------------------
@@ -47,8 +46,8 @@ sim_changepointPP_m <- function(tau0, lambda, mu, t_final) {
 # mu : matrice avec ligne par bélier et deux colonnes de paramètres exponentiels
 # S :  Temps de rupture candIDat.
 # time : vecteur  des temps d'événements pour une brebis, dans l'ordre croissant.
-# U : vecteur  des marques
-# ram : vecteur des béliers
+# U : vecteur  des marques    (meme ordre avec time)
+# ram : vecteur des béliers (meme ordre avec time)
 # t_final :  Temps final d'observation.
 
 loglikelihood_m <- function(lambda, mu, S, time, U, ram, t_final){
@@ -64,7 +63,7 @@ loglikelihood_m <- function(lambda, mu, S, time, U, ram, t_final){
   IDx_equal  <- which(time == S)
   IDx_after  <- which(time > S)
   
-  # Case 1: events at S belong to the pre-break 
+  # Case 1: events at S belong to the pre-change
   IDx_before_1 <- c(IDx_before, IDx_equal)
   IDx_after_1  <- IDx_after
   L_right <- L0
@@ -79,11 +78,6 @@ loglikelihood_m <- function(lambda, mu, S, time, U, ram, t_final){
     L_right <- L_right +
       sum(log(lambda[ram[IDx_after_1], 2] * mu[ram[IDx_after_1], 2])) -
       sum(mu[ram[IDx_after_1], 2] * U[IDx_after_1], na.rm = TRUE)
-  }
-  
-  # Without an event exactly at S
-  if (length(IDx_equal) == 0){
-    return(L_right)
   }
   
   # Case 2: events  at S belong to the post-break regime
@@ -107,7 +101,7 @@ loglikelihood_m <- function(lambda, mu, S, time, U, ram, t_final){
 }
 
 #-----------------------------------------------------------
-# Reconstruire les paramètres lambda et mu pour chaque bélier
+# Reconstruire les paramètres lambda et mu pour chaque bélier en fixant S
 # datain : données d'entrée contenant `ID`, `time`, `marks` et `numAlpha`.
 # S : vecteur numérique des points de rupture estimés.
 # t_final : temps final d'observation.
@@ -120,7 +114,7 @@ rebuildlambdamu_m <- function(datain, S, t_final){
   n_ram <- length(ram_levels)
 
   SommeS <- 0
-  SommeSautAvant <- numeric(n_ram)
+  SommeSautAvant <- numeric(n_ram) # vector n_ram elements de 0
   SommeSautApres <- numeric(n_ram)
   SommeUAvant <- numeric(n_ram)
   SommeUApres <- numeric(n_ram)
@@ -205,15 +199,12 @@ rebuildlambdamu_m <- function(datain, S, t_final){
 }
 
 #-----------------------------------------------------------
-#' Rebuild break-point times by likelihood maximisation
-#'
-#' @param lambdan Numeric matrix with one row per ram and two columns of
-#'   current event-rate estimates.
-#' @param mun Numeric matrix with one row per ram and two columns of current
-#'   mark-rate estimates.
-#' @param ewe Data frame containing `ID`, `time`, `marks`, and  `numAlpha`.
-#' @param t_final Numeric scalar. Final observation time.
-#' @return  the  break-point vector and the  likelihood differences `l1 - l0`.
+# Reconstruire les temps de rupture par maximisation de la vraisemblance
+# lambdan : matrice  (num_ram x 2) contenant les estimations lambda pour chaque bélier.
+# mun : matrice  (num_ram x 2) contenant les estimations des paramètres des marques.
+# ewe : dataframe contenant `ID`, `time`, `marks` et `numAlpha`.
+# t_final : temps final d'observation.
+# @return le vecteur des ruptures et`l1 - l0`.
 
 rebuildS_L_m <- function(lambdan, mun, ewe, t_final){
  
@@ -271,19 +262,18 @@ rebuildS_L_m <- function(lambdan, mun, ewe, t_final){
 }
 
 #-----------------------------------------------------------------------
-#' Rebuild break points using Monte Carlo p-values and BH correction
-#'
-#' @param datain Input data frame containing `ID`, `time`, `marks`, and `numAlpha`.
-#' @param alpha Numeric scalar. Target threshold
-#' @param nb_MC Positive integer. Number of Monte Carlo samples
-#' @param lambdan Numeric matrix with one row per ram and two event-rate columns.
-#' @param mun Numeric matrix with one row per ram and two mark-rate columns.
-#' @param t_final Numeric scalar. Final observation time.
-#' @return A named list containing `S`, `pvalue`, `pvalueclasse`, and `critBH`.
+# Reconstruire les points de rupture a partir de la correction de Benjamini-Hochberg (BH).
+# datain :données contenant `ID`, `time`, `marks` et `numAlpha`.
+# alpha : seuil de significativité choisi.
+# nb_MC : nombre de simulations de Monte Carlo.
+# lambdan : matrice avec une ligne par bélier et deux colonnes correspondant aux intensités des événements.
+# mun : matrice avec une ligne par bélier et deux colonnes correspondant aux paramètres des marques.
+# t_final : temps final d'observation.
+# @return Une liste contenant `S`, `pvalue`, `pvalueclasse` et `critBH`.
 
 rebuildS_BH_m <- function(datain, alpha, nb_MC, lambdan, mun, t_final){
   # Parametric Monte Carlo simulation under H0: tau0 equals t_final
-  list_indivIDuals <- lapply(seq_len(nb_MC), function(i){
+  list_individuals <- lapply(seq_len(nb_MC), function(i){
     tau0 <- t_final
     ewe_MC <- sim_changepointPP_m(
       tau0    = tau0,
@@ -291,24 +281,13 @@ rebuildS_BH_m <- function(datain, alpha, nb_MC, lambdan, mun, t_final){
       mu      = mun,
       t_final = t_final
     )
-    
     if (nrow(ewe_MC) > 0) {
       ewe_MC$ID <- i
-      ewe_MC$tau <- tau0
-    } else {
-      ewe_MC <- tibble::tibble(
-        time     = numeric(0), 
-        marks    = numeric(0),
-        state    = factor(levels = c(0, 1)),
-        numAlpha = if (is.null(rownames(lambdan))) character(0) else character(0),
-        ID       = integer(0),
-        tau      = numeric(0)
-      )
-    }
+      ewe_MC$tau <- tau0 }
     ewe_MC
   })
   
-  ewe_MC <- do.call(rbind, list_indivIDuals)
+  ewe_MC <- bind_rows(list_individuals)
   
   Sl_data <- rebuildS_L_m(lambdan, mun, datain, t_final)
   Sl_MC   <- rebuildS_L_m(lambdan, mun, ewe_MC, t_final)
@@ -347,22 +326,21 @@ rebuildS_BH_m <- function(datain, alpha, nb_MC, lambdan, mun, t_final){
 }
 
 #-----------------------------------------------------------
-#' Detect break points with ram-specific parameters and BH correction
-#'
-#' @param datain Input data frame containing `ID`, `time`, `marks`, and  `numAlpha`.
-#' @param lambda0 Numeric matrix with one row per ram and two columns containing
-#'   the initial event-rate estimates before and after the break point.
-#' @param mu0 Numeric matrix with one row per ram and two columns containing the
-#'   initial mark-rate estimates before and after the break point.
-#' @param nprec Positive integer. Number of parameter-reconstruction iterations.
-#' @param alpha Numeric scalar. Threshold used by the Benjamini-Hochberg rule.
-#' @param nb_MC Positive integer. Number of Monte Carlo samples per iteration.
-#' @param t_final Numeric scalar. Final observation time.
-#' @return A named list with three elements: `outBH`, containing break points,
-#'   p-values and BH results; `lambda_n`, containing the final event-rate matrix;
-#'   and `mu_n`, containing the final mark-rate matrix.
+# Algorithme complet
+# datain : données contenant `ID`, `time`, `marks` et `numAlpha`.
+# lambda0 : matrice (nb_ram x 2) contenant les intensités initiales 
+# mu0 : matrice (nb_ram x 2) contenant les paramètres initiales des marques 
+# nprec : nombre d'itérations.
+# alpha : seuil utilisé pour la correction de Benjamini-Hochberg (BH).
+# nb_MC : nombre de simulations de Monte Carlo par itération.
+# t_final : temps final d'observation.
+# @return Une liste de trois éléments :
+#          `outBH` : contient les points de rupture, les p-values
+#                    et les résultats de la correction BH ;
+#          `lambda_n` : matrice finale des intensités ;
+#          `mu_n` : matrice finale des paramètres des marques.
 
-detectS_BH_m <- function(datain, lambda0, mu0, nprec, alpha, nb_MC, t_final){
+detectS_BH_m <- function(datain, lambda0, mu0, nprec, alpha, nb_MC, t_final,verbose = FALSE){
   lambdan <- lambda0
   mun <- mu0
   
@@ -376,7 +354,7 @@ detectS_BH_m <- function(datain, lambda0, mu0, nprec, alpha, nb_MC, t_final){
     lambdan <- Param$lambda
     mun <- Param$mu
   }
-  
+  if(verbose){
   cat("Estimated lambda:\n")
   print(round(lambdan, 6))
   cat("\nEstimated mu:\n")
@@ -386,7 +364,7 @@ detectS_BH_m <- function(datain, lambda0, mu0, nprec, alpha, nb_MC, t_final){
   cat("\nP-values:\n")
   print(round(outBH$p.value, 6))
   cat("\n")
-
+}
   output <- list(outBH, lambdan, mun)
   names(output) <- c("outBH", "lambda_n", "mu_n")
   return(output)

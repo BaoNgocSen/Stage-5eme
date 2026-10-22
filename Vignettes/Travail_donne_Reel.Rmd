@@ -4,11 +4,11 @@ output: html_document
 ---
 Dans ce markdown, on va appliquer les functions de 3 types:
 
-- Offline algorithme avec effet male
-- Online algorithme avec les paramètres connus
-- Online algorithme avec les paramètres inconnus
+- Offline algorithme avec effet male (Algo I)
+- Online algorithme avec les paramètres connus (Algo II)
+- Online algorithme avec les paramètres inconnus  (Algo III)
 
-sur les données réelles du chevauchement des béliers et des brebis.
+sur les données réelles du chevauchement des béliers et des brebis. Comme les durées sont pas fiables, on suppose que elles sont égales à 1 pour tous les chevauchements.
 
 D'abord, on prépare les bibliothèques nécessaires pour l'exécution.
 
@@ -33,78 +33,107 @@ library(dplyr)
 library(tidyr)
 library(ggplot2)
 library(epic)
+source("../R/epic_ram.R")
 source("../R/E_detecteur.R")
 source("../R/Online_mul_ram.R")
-source("../R/epic_ram.R")
+
 ```
 
 # I. Analyse des données
+## I.1 Importe et pré-traité les données
 On tout d'abord importe les data 
 ```{r, import data }
 Corse2024 <- read_excel("../Data/Corse2024-IA-FGA+EM/Corse2024-DataIA.xlsx",  sheet = "Données Brutes")
+
 Corse2025 <- read_excel("../Data/Corse2025-IA-FGA+EM/Corse2025-DataIA.xlsx", sheet = "All Data")
-LaCazotte2023<-read_excel("../Data/LaCazotte2023-IA-FGA+EM/LaCazotte2023-EffetMâle.xlsx", sheet = "Données brutes")
+
+LaCazotte2023<-read_excel("../Data/LaCazotte2023-IA-FGA+EM/LaCazotte2023-EffetMâle.xlsx", sheet = "Données Effet Mâle")
+
 LaCazotte2024 <- read_excel("../Data/LaCazotte2024-IA-FGA+EM/LaCazotte2024-EffetMâle.xlsx", sheet = "Données brute EM")
-LaFage2025 <- read_excel("../Data/LaFage2025-IA-EffetMâle/LaFage2025-DataEffetBélier.xlsx",    sheet = "Data Effet Bélier Brutes")
+
 LaFage2023 <- read_excel("../Data/LaFage2023-IA-FGA+EM/LaFage2023-DataIA.xlsx",   sheet = "Data Bélier")
+
+LaFage2025_em <- read_excel("../Data/LaFage2025-IA-EffetMâle/LaFage2025-DataEffetBélier.xlsx",    sheet = "Data Effet Bélier")
+LaFage2025_DataIA <- read_excel("~/Nguyen_Ngoc/stage-de-ngoc/Data/LaFage2025-IA-EffetMâle/LaFage2025-DataIA.xlsx", sheet = "Data IA")
 ```
 
 ```{r, take infor}
-Corse2024<-Corse2024[,c("ID","Alpha","DATE (dd_mm_yyyy)")]
-Corse2025<-Corse2025[,c(2,3,8)]
-LaCazotte2023<-LaCazotte2023[,c("ID","Bélier","DATE (dd_mm_yyyy)2")]
-LaCazotte2024<-LaCazotte2024[,c("ID","Alpha","DATE (dd_mm_yyyy)")]
-LaFage2023<-LaFage2023[,c("ID","Alpha","DATE (dd_mm_yyyy)")]
-LaFage2025<-LaFage2025[,c("ID","Alpha","DATE (dd_mm_yyyy)")]
+
+Corse2024 <- subset(Corse2024[, c("N° Brebis","Bélier","DATE (dd_mm_yyyy)")], 
+                    !is.na(`N° Brebis`) & !is.na(Bélier) & !is.na(`DATE (dd_mm_yyyy)`))
+
+Corse2025 <- subset(Corse2025[, c("N° Brebis","N° Bélier","DATE (dd_mm_yyyy)")], 
+                    !is.na(`N° Brebis`) & !is.na(`N° Bélier`) & !is.na(`DATE (dd_mm_yyyy)`))
+
+LaCazotte2023 <- subset(LaCazotte2023[, c("N° Brebis","Bélier","DATE (dd_mm_yyyy)2")], 
+                        !is.na(`N° Brebis`) & !is.na(Bélier) & !is.na(`DATE (dd_mm_yyyy)2`))
+
+LaCazotte2024 <- subset(LaCazotte2024[, c("N° Brebis","Bélier","DATE (dd_mm_yyyy)")], 
+                        !is.na(`N° Brebis`) & !is.na(Bélier) & !is.na(`DATE (dd_mm_yyyy)`))
+
+LaFage2023 <- subset(LaFage2023[, c("N° brebis","Bélier","DATE (dd_mm_yyyy)")], 
+                     !is.na(`N° brebis`) & !is.na(Bélier) & !is.na(`DATE (dd_mm_yyyy)`))
+
+LaFage2025_em <- subset(LaFage2025_em[, c("N° Brebis","Bélier","DATE (dd_mm_yyyy)")], 
+                        !is.na(`N° Brebis`) & !is.na(Bélier) & !is.na(`DATE (dd_mm_yyyy)`))
+
+LaFage2025_DataIA <- subset(LaFage2025_DataIA[, c("N° Brebis","Bélier","DATE (dd_mm_yyyy)")], 
+                            !is.na(`N° Brebis`) & !is.na(Bélier) & !is.na(`DATE (dd_mm_yyyy)`))
+
+LaFage2025 <- rbind(LaFage2025_em, LaFage2025_DataIA)
 
 ```
 
 ```{r}
 data <- list(
-  Corse2024 = Corse2024,
-  Corse2025 = Corse2025,
-  LaCazotte2023 = LaCazotte2023,
-  LaCazotte2024 = LaCazotte2024,
-  LaFage2023 = LaFage2023,
-  LaFage2025 = LaFage2025
+  Corse2024 = cbind(Corse2024, marks = 1),
+  Corse2025 = cbind(Corse2025, marks = 1),
+  LaCazotte2023 = cbind(LaCazotte2023, marks = 1),
+  LaCazotte2024 = cbind(LaCazotte2024, marks = 1),
+  LaFage2023 = cbind(LaFage2023, marks = 1),
+  LaFage2025 = cbind(LaFage2025, marks = 1) 
 )
 ```
 
 Pour faciliter, on synchronise les noms de chaque colonne :
   - Première colonne : ID - ID de la brebis correspondant au chevauchement
 
-  - Deuxième colonne : Alpha - Nom de la brebis correspondant au chevauchement
+  - Deuxième colonne : numAlpha - Nom de la brebis correspondant au chevauchement
 
-  - Troisième colonne : Event - Moment du chevauchement
+  - Troisième colonne : event - Moment du chevauchement
   
-
+  - Quatrème colonne:  marks  - La durée (toutes égale à 1)
+  
 
 ```{r}
 for (i in names(data)) {
-  names(data[[i]]) <- c("ID", "Alpha", "Event")
+  names(data[[i]]) <- c("ID", "numAlpha", "event", "marks")
+  data[[i]]$ID <- as.character(data[[i]]$ID)
+  data[[i]]$numAlpha <- as.character(data[[i]]$numAlpha)
   cat(i, ":\n")
   print(sapply(data[[i]], class))
 }
 ```
 On peut voir que les moments dans les données "LaFage2023" sont en format character, on doit donc changer ça en POSIXct.
 ```{r}
-data[[5]]$Event <- as.POSIXct(
-  data[[5]]$Event,
-  format = "%d %m %Y %H:%M:%S"
+data[[5]]$event <- as.POSIXct(
+  data[[5]]$event,
+  format = "%d %m %Y %H:%M:%S",
+  zone="UTC"
 )
-class(data[[5]]$Event)
+class(data[[5]]$event)
 ```
-On a ci-dessous les informations  
+
+## I.1 Analyse descritve
+On a ci-dessous les informations générales des données (jour de début d’observation, jour de fin, nombre de brebis et de béliers observés).
 ```{r}
 resume <- data.frame()
 for (i in names(data)){
   num_brebis <- length(unique(data[[i]]$ID))
-  num_belier <- length(unique(data[[i]]$Alpha))
-  num_day <-  1+ ceiling(as.numeric( difftime(max(data[[i]]$Event), 
-                               min(data[[i]]$Event), 
-                               units = "days" )))
-  day_begin <-min(data[[i]]$Event)
-  day_end <-max(data[[i]]$Event)
+  num_belier <- length(unique(data[[i]]$numAlpha))
+  num_day <-  ceiling(as.Date(max(data[[i]]$event))-as.Date(min(data[[i]]$event)))+1
+  day_begin <-min(data[[i]]$event)
+  day_end <-max(data[[i]]$event)
   resume<- bind_rows(resume,
                      data.frame(
                        i,
@@ -117,9 +146,287 @@ for (i in names(data)){
 }
 resume
 ```
+Comme la data Corse2024, Corse2025 et LaFage2023 est observée dans un court période, on chosit l'unit est par 1 heure. Pour les datasets LaCazotte2023, LaCazotte2024	et LaFage2025, on chosit l'unit est par 1 jour.
 
 ```{r}
-min(data[[]]$Event)
-max(data[[5]]$Event)
+echelle <- function(data, unit = "days", nombre = 1) {
+  
+  date_min <- min(as.Date(data$event))
+  
+  t_final <- as.numeric(
+    difftime(as.Date(max(data$event)), date_min, units = "days")
+  ) + 1
+  
+  duree <- as.numeric(
+    difftime(data$event, date_min, units = "days")
+  )
+  
+  if (unit == "days") {
+    data$times <- duree / nombre
+    t_final <- t_final / nombre
+    
+  } else if (unit == "heures") {
+    data$times <- duree * 24 / nombre
+    t_final <- t_final * 24 / nombre
+  }
+  
+  data$t_final <- t_final
+  
+  return(data)
+}
+
+```
+
+```{r}
+data[[1]]<-echelle(data[[1]], "heures", 1)
+data[[2]]<-echelle(data[[2]], "heures", 1)
+data[[3]]<-echelle(data[[3]], "days", 1)
+data[[4]]<-echelle(data[[4]], "days", 1)
+data[[5]]<-echelle(data[[5]], "heures", 1)
+data[[6]]<-echelle(data[[6]], "days", 1)
+
+```
+
+```{r}
+data[[1]]
+data[[2]]
+data[[3]]
+data[[4]]
+data[[5]]
+data[[6]]
+```
+
+Diagramme en barres représentant le nombre d’événements pour chaque bélier (exemples : LaCazotte 2023 ).
+
+```{r}
+count_ca23<-count(data[[3]], numAlpha,name="Num_event")
+ggplot(count_ca23, aes(x=numAlpha,y=Num_event))+geom_bar(stat = "identity")+labs(title = "L'Activité des béliers de La Cazotte 2023", x="Bélier",y="Nombre de cheveuchement")
+```
+**Remarque:** On observe que l'activité des bélier sont different.
+
+La fonction ci-dessous convert les dates et heures des événements en une échelle de temps commune (en heures ou en jours).
+Par exemple si on veut prend l'unit est 2 heures, alors on applique
+echelle(data,heurs,2)
+
+
+# II. Offline algorithme avec effet male
+
+On commence d’abord par créer les valeurs initiales de lambda et mu pour l’algorithme offline.
+
+```{r}
+lambda_bar_ram <- list()
+mu_init<-list()
+for (i in names(data)) {
+  
+  ram_levels <- sort(unique(data[[i]]$numAlpha))
+  lambda <- sapply(ram_levels, function(ram) {
+    num_event <- sum(data[[i]]$numAlpha == ram)
+    num_ID <- length(unique(data[[i]]$ID))
+    num_event / (num_ID * data[[i]]$t_final[1])
+  })
+  
+  lambda_bar_ram[[i]] <- cbind(
+    before = pmax(lambda * 0.5, 0.01),
+    after  = pmax(lambda * 2, 0.01)
+  )
+   mu_init[[i]] <- matrix( 1, nrow = length(ram_levels), ncol = 2)
+   rownames(mu_init[[i]]) <- rownames(lambda_bar_ram[[i]])
+
+}
+```
+
+```{r}
+rownames(lambda_bar_ram[[i]] )
+rownames(mu_init[[i]])
+```
+µµµµ giai thich vi sao ra 0.01 nua
+```{r}
+out_offline <- list()
+for (i in names(data)){
+  out_offline[[i]]<-detectS_BH_m(data[[i]],lambda_bar_ram[[i]], mu_init[[i]], nprec = 50,alpha = 0.05, nb_MC = 500,t_final =  data[[i]]$t_final[1])
+  
+  
+}
+```
+On a ici les changes points estimées et les intensité estimés coresspond da chaque site
+```{r}
+for (i in names(data)) {
+  
+  out_offline[[i]]$outBH$ID <- sort(unique(data[[i]]$ID))
+  cat(i, ":\n")
+  cat("L'intensité par bélier :\n")
+  print(out_offline[[i]]$lambda_n)
+  cat("Rupture par brebis :\n")
+  IDs <- out_offline[[i]]$outBH$ID
+  S <- out_offline[[i]]$outBH$S
+  for (j in seq_along(IDs)) {
+    cat("ID", IDs[j], ": S =", S[j], "\n") }
+  cat("\n")
+}
+```
+#III. Online algorithme avec les paramètres connus
+On applique ci-desous algorithme en ligne sur les datas avec les lambdas sont les lambdas.
+
+```{r}
+out_online <- list()
+for (i in names(data)) {
+  
+  lambda <- out_offline[[i]]$lambda_n
+  t_final <- data[[i]]$t_final[1]
+  K <- floor(t_final)
+  out_online[[i]] <- detect_rupture_herd_online_FWER_ram(data[[i]],K,lambda,
+    mu_init[[i]],B = 200,alpha = 0.05,d_min = 1,seed = 123,verbose = TRUE)
+}
+```
+
+#IV. Online algorithme avec les paramètres inconnus
+```{r}
+lamb0_edetec <- list()
+out_online_e <- list()
+
+for (i in names(data)) {
+  cat(i,": \n")
+  t_final <- data[[i]]$t_final[1]
+  if (i %in% c("LaCazotte2023", "LaCazotte2024", "LaFage2025")) {d0 <- 1} 
+  else {d0 <- 25}
+  W <- d0
+  alpha <- 0.05
+  
+  lamb0 <- nrow(data[[i]][data[[i]]$time <= d0, ]) /(d0 * length(unique(data[[i]]$ID)))
+  
+  lamb0_edetec[[i]] <- lamb0
+  x <- Alarme_SR(data[[i]],lamb0,d0,W,alpha, t_final,Verbose = TRUE)
+  out_online_e[[i]] <- x
+  
+  }
+
+
+```
+#V. Comparation entre les méthodes et avec résultat d'IA
+On crée ci-dessous une tableau qui contient des résultats de 3 algorithmes
+```{r}
+Compare<-list()
+for (i in (names(data))){
+
+  Compare[[i]]<-data.frame(
+    ID= sort(unique(data[[i]]$ID)),
+    t_final=data[[i]]$t_final[1],
+    S_offline=out_offline[[i]]$outBH$S,
+    S_online= out_online[[i]]$result$S_hat,
+    Alarm=out_online[[i]]$result$tau,
+    Alarm_e= out_online_e[[i]]$tau
+  )
+   Compare[[i]]$times <- lapply(sort(unique(data[[i]]$ID)),function(id) data[[i]]$times[data[[i]]$ID == id])
+  cat(i,":\n")
+  print(Compare[[i]][, -which(names(Compare[[i]]) == "times")])
+  cat("\n")
+}
+```
+Voici dessous les plots pour faciliter la comparaison 
+Délais entre alarm et rupture detecter d'algorithme 2
+```{r}
+for (i in names(data)) {
+  Compare[[i]]$ID <- reorder(Compare[[i]]$ID, Compare[[i]]$Alarm)
+  p <- ggplot(data = Compare[[i]], aes(y = ID)) +
+    geom_point(data = data[[i]],aes(x = times, y = ID),color = "black",alpha = 0.3) +
+    geom_point(aes(x = S_online, color = "S_online", size=2)) +
+    geom_point(aes(x = Alarm, color = "Alarm",size=2)) +
+    scale_color_manual(name = "Type", values = c( S_online = "green", Alarm = "yellow")) +
+    scale_size_identity() +
+    labs(title = paste("Changepoint detection in", i), x = "Time", y = "ID brebis")
+  print(p)
+}
+```
+Compare S détectée entre algorithme 1 et algorithme 2
+```{r}
+for (i in names(data)) {
+  Compare[[i]]$ID <- reorder(Compare[[i]]$ID, Compare[[i]]$S_offline)
+  p <- ggplot(data = Compare[[i]], aes(y = ID)) +
+    geom_point(data = data[[i]],aes(x = times, y = ID),color = "black",alpha = 0.3,size =1) +
+    geom_point(aes(x = S_offline, color = "S_offline")) +
+    geom_point(aes(x = S_online, color = ifelse(S_online == S_offline,"Online=Offline","S_online"), size = ifelse(S_online == S_offline,1.5,1))) +
+    scale_color_manual(name = "Type", values = c(S_offline = "blue", S_online = "green", "Online=Offline" = "red")) +
+    scale_size_identity() +
+    labs(title = paste("Changepoint detection in", i), x = "Time", y = "ID brebis")
+  print(p)
+  
+}
+```
+Compare alarme détectée entre algorithme 2 et algorithme 3
+```{r}
+for (i in names(data)) {
+   Compare[[i]]$ID <- reorder(Compare[[i]]$ID, Compare[[i]]$S_online)
+  p <- ggplot(data = Compare[[i]], aes(y = ID)) +
+    # Events
+    geom_point(data = data[[i]],aes(x = times, y = ID),color = "black",alpha = 0.3) +
+    geom_point(aes(x = S_online, color = "S_online"))+
+    # Alarms
+    geom_point(aes(x = Alarm, color = "Alarm")) +
+    geom_point(aes(x = Alarm_e, color = ifelse((Alarm==Alarm_e),"Alarm at same time","Alarm_e"))) +
+    scale_color_manual( name = "Type",values = c( S_online = "green",Alarm = "yellow", Alarm_e = "violet","Alarm at same time" = "red")) +
+    
+    labs(title = paste("Changepoint detection in", i), x = "Time",y = "ID brebis")
+  
+  print(p)
+}
+```
+
+Les trois algo sur une meme graphe
+```{r}
+for (i in names(data)) {
+  
+  p <- ggplot(data = Compare[[i]], aes(y = ID)) +
+    
+    # Events
+    geom_point(data = data[[i]],aes(x = times, y = ID),color = "black",alpha = 0.3) +
+    # Changepoints
+    geom_point(aes(x = S_offline, color = "S_offline")) +
+    geom_point(aes(x = S_online, color = "S_online")) +
+    # Alarms
+    geom_point(aes(x = Alarm, color = "Alarm")) +
+    geom_point(aes(x = Alarm_e, color = "Alarm_e")) +
+    scale_color_manual( name = "Type",values = c(S_offline = "red", S_online = "green",Alarm = "yellow", Alarm_e = "violet")) +
+    
+    labs(title = paste("Changepoint detection in", i), x = "Time",y = "ID brebis")
+  
+  print(p)
+}
+```
+# VI. Comparation avec résultat d'IA
+On import d'abord les dataset.
+```{r}
+LaFage2023_InfosProtocole<-read_excel("../Data/LaFage2023-IA-FGA+EM/LaFage2023-InfosProtocole.xlsx", sheet = "IA")
+LaFage2025_InfosProtocole <- read_excel("../Data/LaFage2025-IA-EffetMâle/LaFage2025-InfosProtocole.xls", sheet = "IA")
+LaCazotte2024_InfosProtocole <- read_excel("../Data/LaCazotte2024-IA-FGA+EM/LaCazotte2024-InfosProtocole.xlsx", sheet = "IA")
+LaCazotte2023_InfosProtocole <-read_excel("../Data/LaCazotte2023-IA-FGA+EM/LaCazotte2023-InfosProtocole.xlsx", sheet = "IA")
+Corse2024_InfosProtocole <- read_excel("../Data/Corse2024-IA-FGA+EM/Corse2024-InfosProtocole.xlsx",  sheet = "IA")
+Corse2025_InfosProtocole <- read_excel("../Data/Corse2025-IA-FGA+EM/Corse2025_InfosProtocole.xlsx", sheet = "IA")
+
+```
+
+```{r}
+data_IA <- list(
+  Corse2024_IA  = Corse2024_InfosProtocole,
+  Corse2025_IA  = Corse2025_InfosProtocole,
+  LaCazotte2023_IA  = LaCazotte2023_InfosProtocole,
+  LaCazotte2024_IA  = LaCazotte2024_InfosProtocole,
+  LaFage2023_IA  = LaFage2023_InfosProtocole,
+  LaFage2025_IA  = LaFage2025_InfosProtocole
+)
+```
+```{r}
+sapply(data_IA, ncol)
+```
+
+```{r}
+for (i in names(data_IA)) {
+  sapply(data_IA, ncol)
+  names(data_IA[[i]]) <- c("ID", "Date_IA", "result")
+  data_IA[[i]]$ID <- as.character(data_IA[[i]]$ID)
+  data_IA[[i]]$result<- as.character(data_IA[[i]]$result)
+  data_IA[[i]]$Date_IA <-as.POSIXct(data_IA[[i]]$Date_IA)
+  cat(i, ":\n")
+  print(sapply(data_IA[[i]], class))
+}
 ```
 

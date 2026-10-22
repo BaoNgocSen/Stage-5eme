@@ -1,30 +1,20 @@
 
 #--------------------------------------------------------------------
-# Objective: online changepoint detection for one ewe using a marked Poisson point process and Monte Carlo calibration
-#
-# Main functions:
-#   sim_changepointPP             Simulate marked Poisson events
-#   compute_G_one_day             Compute the daily detection statistic G(d)
-#   bootstrap_G_null              Simulate the null distribution of G(d)
-#   calibrate_min_p_null          Calibrate the sequential p-value threshold
-#   compute_pvalue_one_day        Compute the p-value for one ewe on one day
-#   detect_rupture_one_ewe_online Run th e complete online detection procedure
+# Objectif : détecter en ligne la rupture pour une brebis et un bélier (mark=1)
+
+# sim_changepointPP : simuler des événements d'un processus de Poisson marqué
+# compute_G_one_day : calculer la statistique de détection G(d) pour une journée
+# bootstrap_G_null : simuler la distribution nulle de G(d)
+# calibrate_min_p_null : calibrer le seuil des p-values séquentielles
+# compute_pvalue_one_day : calculer la p-value pour une brebis sur une journée
+# detect_rupture_one_ewe_online : exécuter toute la procédure 
 #--------------------------------------------------------------------
 
-#' Simulate a marked Poisson process with one changepoint
-
-#'
-#' @param tau0 Numeric. Changepoint time.
-#' @param lambda Numeric vector of length 2. `lambda[1]` is the event rate
-#'   before `tau0`, and `lambda[2]` is the event rate after `tau0`.
-#' @param mu Numeric vector of length 2. `mu[1]` is the exponential mark rate
-#'   before `tau0`, and `mu[2]` is the exponential mark rate after `tau0`.
-#' @param t_final Numeric. Final observation time.
-#'
-#' @return A data frame sorted by event time with columns:
-#'   `time`, `marks`, and `state`. State 0 denotes events before the
-#'   changepoint and state 1 denotes events after the changepoint.
-#'
+# Simuler un processus de Poisson marqué avec une rupture
+# tau0 : la rupture.
+# lambda (lambda[1],lambda[2]) : intensités avant et après tau0.
+# mu (mu[1], mu[2]) : paramètres des lois exponentielles  avant et après tau0.
+# t_final : temps final d'observation.
 
 sim_changepointPP <- function(tau0, lambda, mu, t_final) {
   
@@ -44,30 +34,20 @@ sim_changepointPP <- function(tau0, lambda, mu, t_final) {
   )
   
   out <- out[order(out$time), ]
-  rownames(out) <- NULL
   
   return(out)
 }
 
 #--------------------------------------------------------------------
-#' Compute the online detection statistic for one ewe on one day
-#
-#' @param ewe_ind Data frame for one ewe containing at least `time` and `marks`.
-#' @param d Integer or numeric. Current monitoring day.
-#' @param lambda0 Numeric. Event rate under the pre-change model.
-#' @param mu0 Numeric. Mark rate under the pre-change model.
-#' @param lambda1 Numeric. Event rate under the post-change model.
-#' @param mu1 Numeric. Mark rate under the post-change model.
-#' @param L_min Numeric. Minimum allowed duration between a candidate
-#'   changepoint and the current day.
-#'
-#' @return A list with:
-#'   \itemize{
-#'     \item `G`: the maximum  log-likelihood-ratio statistic;
-#'     \item `S_hat`: the maximizing changepoint candidate.
-#'   }
+# Calculer la statistique en ligne pour une brebis et une journée
 
-compute_G_one_day <- function(ewe_ind, d,lambda0, mu0,lambda1, mu1,L_min = 0) {
+# ewe_ind : Data frame contenant les colonnes `time` et `marks`.
+# d : Jour de surveillance actuel.
+# lambda0/lambda1 : intensités avant et après le point de rupture.
+# mu0/mu1 : paramètres des lois des marques avant et après le point de rupture.
+# Return (G, S_hat) : statistique de test et la rupture estimé.
+
+compute_G_one_day <- function(ewe_ind, d,lambda0, mu0,lambda1, mu1) {
   
   ewe_ind <- ewe_ind[ewe_ind$time < d, ]
   ewe_ind <- ewe_ind[order(ewe_ind$time), ]
@@ -80,7 +60,6 @@ compute_G_one_day <- function(ewe_ind, d,lambda0, mu0,lambda1, mu1,L_min = 0) {
   dmu       <- mu1 - mu0
   
   S_grid <- c(0, times[times < d])
-  S_grid <- S_grid[(d - S_grid) >= L_min]
   
   if (length(S_grid) == 0) {
     return(list(G = 0, S_hat = NA_real_))
@@ -105,21 +84,16 @@ compute_G_one_day <- function(ewe_ind, d,lambda0, mu0,lambda1, mu1,L_min = 0) {
   return(list(G = G,S_hat = S_hat ))
 }
 
-#' Simulate the null distribution of the daily statistic
-#'
-#' @param B Integer. Number of Monte Carlo trajectories.
-#' @param K Integer. Number of monitoring days and final simulation time.
-#' @param lambda0 Numeric. Event rate under the null model.
-#' @param mu0 Numeric. Mark rate under the null model.
-#' @param lambda1 Numeric. Alternative event rate used in the likelihood ratio.
-#' @param mu1 Numeric. Alternative mark rate used in the likelihood ratio.
-#' @param L_min Numeric. Minimum allowed interval length after a candidate changepoint.
-#' @param seed Optional integer random seed.
-#'
-#' @return  `G(d)` null distribution of the daily statistic.
-bootstrap_G_null <- function(B, K, lambda0, mu0, lambda1, mu1, L_min = 0, seed = NULL) {
-  
-  if (!is.null(seed)) set.seed(seed)
+#--------------------------------------------------------------------
+# Simuler la distribution nulle de la statistique journalière
+
+# B : Nombre de simulations de Monte Carlo.
+# K : Nombre de jours de surveillance.
+# lambda0/lambda1 : Intensités avant et après la rupture.
+# mu0/mu1 : Paramètres des lois des marques avant et après la rupture.
+# seed : Graine aléatoire facultative (entier).
+#  @return Distribution nulle de la statistique journalière G(d).
+bootstrap_G_null <- function(B, K, lambda0, mu0, lambda1, mu1, seed = 123) {
   
   G_null <- matrix(0, nrow = B, ncol = K)
   colnames(G_null) <- paste0("day_", seq_len(K))
@@ -127,7 +101,7 @@ bootstrap_G_null <- function(B, K, lambda0, mu0, lambda1, mu1, L_min = 0, seed =
   for (b in seq_len(B)) {
     dat_b <- sim_changepointPP( tau0  = K,  lambda  = c(lambda0, lambda0), mu = c(mu0, mu0), t_final = K)
     for (d in seq_len(K)) {
-      out_d <- compute_G_one_day(dat_b,d,lambda0, mu0,lambda1,mu1,L_min )
+      out_d <- compute_G_one_day(dat_b,d,lambda0, mu0,lambda1,mu1)
       G_null[b, d] <- out_d$G
     }
   }
@@ -135,18 +109,16 @@ bootstrap_G_null <- function(B, K, lambda0, mu0, lambda1, mu1, L_min = 0, seed =
 }
 
 #--------------------------------------------------------------------
-#' Calibrate the sequential minimum-p-value threshold
+# Calibrer le seuil de p-value minimale séquentielle
 
-#' @param G_null Numeric matrix returned by `bootstrap_G_null()`.
-#' @param d_min Integer. First monitoring day included in calibration.
-#' @param alpha Numeric in `[0,1]`, false-alarm level.
-#'
-#' @return A list with:
-#'   \itemize{
-#'     \item `P_null`: matrix of empirical day-specific p-values;
-#'     \item `R_null`: minimum p-value for each null trajectory;
-#'     \item `u_alpha`: calibrated online decision threshold. }
-#'     
+# G_null : matrice numérique retournée par `bootstrap_G_null()`.
+# d_min : premier jour de surveillance.
+# alpha : niveau de fausse alarme.
+#return Une liste contenant :
+#         P_null : matrice des p-values ;
+#          R_null : p-value minimale pour chaque trajectoire sous le modèle nul ;
+#          u_alpha : seuil calibré.
+    
 calibrate_min_p_null <- function(G_null, d_min = 1, alpha = 0.05) {
   
   B <- nrow(G_null)
@@ -164,92 +136,73 @@ calibrate_min_p_null <- function(G_null, d_min = 1, alpha = 0.05) {
   # Online threshold: alarm at first day p_d <= u_alpha
   u_alpha <- as.numeric(quantile(R_null, probs = alpha, type = 1))
   
-  return(list( P_null = P_null, R_null = R_null, u_alpha = u_alpha
-  ))
+  return(list( P_null = P_null, R_null = R_null, u_alpha = u_alpha))
 }
 
 
 #--------------------------------------------------------------------
-#' Compute the empirical p-value for one ewe on one day
-#'
-#' @param ewe_ind Data frame for one ewe containing at least `time` and `marks`.
-#' @param d Integer. Monitoring day.
-#' @param G_null Numeric null-statistic matrix with one column per day.
-#' @param lambda0 Numeric. Event rate under the pre-change model.
-#' @param mu0 Numeric. Mark rate under the pre-change model.
-#' @param lambda1 Numeric. Event rate under the post-change model.
-#' @param mu1 Numeric. Mark rate under the post-change model.
-#' @param L_min Numeric. Minimum allowed interval length after a candidate changepoint.
-#'
-#' @return A list containing the day, observed statistic, empirical p-value, and estimated changepoint.
-#' 
-compute_pvalue_one_day <- function(ewe_ind, d, G_null, lambda0, mu0,lambda1, mu1,L_min = 0) {
-  
+# Calculer la p-value empirique pour une brebis un jour donné
+
+# ewe_ind : données correspondant à une seule brebis.
+# d : jour de surveillance.
+# G_null : matrice numérique de la statistique nulle,
+#          avec une colonne par jour.
+# lambda0/lambda1 : intensités dans le modèle avant/après le point de rupture.
+# @return Une liste contenant : le jour, la statistique observée,
+#'        la p-value empirique et le point de rupture estimé.
+
+compute_pvalue_one_day <- function(ewe_ind, d, G_null, lambda0,mu0,lambda1,mu1) {
   B <- nrow(G_null)
-  G_out <- compute_G_one_day( ewe_ind, d,lambda0,mu0, lambda1,mu1,L_min)
+  G_out <- compute_G_one_day( ewe_ind, d,lambda0,mu0, lambda1,mu1)
   
   p_d <- (sum(G_null[, d] >= G_out$G)) / B
 
   return(list(day = d,G_obs = G_out$G, p_value = p_d, S_hat = G_out$S_hat ))
 }
 
+
 #--------------------------------------------------------------------
-# Final function
-#' Detect a changepoint online for one ewe
-#'
-#' @param ewe_ind Data frame for one ewe containing at least `time` and `marks`.
-#' @param K Integer. Final monitoring day.
-#' @param lambda0 Numeric. Event rate under the pre-change model.
-#' @param mu0 Numeric. Mark rate under the pre-change model.
-#' @param lambda1 Numeric. Event rate under the post-change model.
-#' @param mu1 Numeric. Mark rate under the post-change model.
-#' @param B Integer. Number of Monte Carlo trajectories when `G_null` is not
-#'   supplied.
-#' @param alpha Numeric in `[0,1]`. Target sequential false-alarm level.
-#' @param d_min Integer. First day on which an alarm is allowed.
-#' @param L_min Numeric. Minimum allowed interval length after a candidate
-#'   changepoint.
-#' @param seed Optional integer random seed.
-#' @param G_null Optional precomputed null-statistic matrix.
-#' @param verbose Logical. Print the detection summary when `TRUE`.
-#' @param return_null Logical. Include null-calibration objects in the output
-#'   when `TRUE`.
-#'
-#' @return A list containing:
-#'   \itemize{
-#'     \item `alarm`: whether a changepoint alarm occurred;
-#'     \item `tau`: first alarm day, or `Inf` if no alarm occurred;
-#'     \item `S_hat`: estimated changepoint at the alarm day;
-#'     \item `u_alpha`: calibrated sequential p-value threshold;
-#'     \item `alpha`: requested false-alarm level;
-#'     \item `path`: daily statistics, p-values, changepoint estimates, and
-#'       alarm indicators.
-#'   }
+# Fonction finale : détecter en ligne un point de rupture pour une brebis
 
-detect_rupture_one_ewe_online <- function(ewe_ind, K,lambda0, mu0,lambda1, mu1,B = 1000,alpha = 0.05,d_min = 1,
-                                          L_min = 0,seed = NULL,G_null = NULL, verbose = TRUE,return_null = TRUE) {
-  
+# ewe_ind : données correspondant à une seule brebis.
+# B : nombre de simulations de Monte Carlo.
+# K : nombre de jours de surveillance.
+# lambda0/lambda1 : intensités avant et après le point de rupture.
+# d_min : premier jour de surveillance.
+# alpha : niveau de fausse alarme.
+# seed : graine aléatoire facultative (entier).
+# verbose : affiche un résumé de la détection lorsque `TRUE`.
 
-  #  Bootstrap under H0 
-  if (is.null(G_null)) {
-    G_null <- bootstrap_G_null(B, K,lambda0,mu0, lambda1, mu1, L_min,seed = seed )}
+# return Une liste contenant :
+#         `alarm` : indique si une alarme de rupture a été déclenchée ;
+#         `tau` : premier jour de déclenchement de l'alarme,
+#                ou `Inf` si aucune alarme n'a été déclenchée ;
+#         `S_hat` : point de rupture estimé au jour de l'alarme ;
+#         `u_alpha` : seuil calibré des p-values séquentielles ;
+#         `alpha` : niveau de fausse alarme choisi ;
+#         `path` : statistiques journalières, p-values,
+#'                estimations des points de rupture et indicateurs d'alarme.  
+
+detect_rupture_one_ewe_online <- function(ewe_ind, K,lambda0,mu0,lambda1, mu1,B = 1000,alpha = 0.05,
+                                          d_min = 1,seed = 123, verbose = TRUE) {
   
+  G_null <- bootstrap_G_null(B, K,lambda0,mu0, lambda1, mu1,seed = seed )
   B0 <- nrow(G_null)
   
   #  Calibrate min-p threshold
   calib <- calibrate_min_p_null(G_null,d_min,alpha )
-  
   u_alpha <- calib$u_alpha
   
   #  Online monitoring
-  path <- data.frame(day = seq_len(K), G_obs = NA_real_, p_value = NA_real_, S_hat = NA_real_, alarm_here = FALSE )
+  path <- data.frame(day = seq_len(K), G_obs = NA_real_, p_value = NA_real_,
+                     S_hat = NA_real_, alarm_here = FALSE )
   
   alarm <- FALSE
   tau <- Inf
   S_alarm <- NA_real_
   
   for (d in seq_len(K)) {
-    G_out <- compute_G_one_day( ewe_ind, d,lambda0,mu0, lambda1, mu1, L_min)
+    G_out <- compute_G_one_day( ewe_ind, d,lambda0,mu0, lambda1, mu1)
     p_d <- (sum(G_null[, d] >= G_out$G)) / (B0 )
     path$G_obs[d] <- G_out$G
     path$p_value[d] <- p_d
@@ -272,17 +225,14 @@ detect_rupture_one_ewe_online <- function(ewe_ind, K,lambda0, mu0,lambda1, mu1,B
       cat("G at alarm =", path$G_obs[tau], "\n")
     } else {
       cat("ALARM: NO before T =", K, "\n")
-      cat("Minimum observed p-value =", min(path$p_value[d_min:K], na.rm = TRUE), "\n")
     }
   }
   
   out <- list(alarm,tau, S_alarm, u_alpha, alpha,path)
-  
-  if (return_null) {
-    out$G_null <- G_null
-    out$R_null <- calib$R_null
-    out$P_null <- calib$P_null
-  }
+  out$G_null <- G_null
+  out$R_null <- calib$R_null
+  out$P_null <- calib$P_null
+
   
   return(out)
 }

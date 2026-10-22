@@ -24,19 +24,16 @@ options(
 ```
 
 ```{r}
+library(lubridate)
+library(dplyr)
 library(readxl)
 library(dplyr)
 library(tidyr)
-library(lubridate)
-source("epic_ram.R")
-source("Online_mul_ram.R")
-library(readxl)
-library(dplyr)
-library(lubridate)
 library(ggplot2)
-library(plotly)
 library(epic)
-library(purrr)
+source("../R/epic_ram.R")
+source("../R/E_detecteur.R")
+source("../R/Online_mul_ram.R")
 ```
 
 # I. Data descritive
@@ -221,14 +218,26 @@ run_offline <- function(dat_epic, t_final,nprec = 10,alpha = 0.05, nb_MC = 200,s
   lambda_hat <- out$lambda_n
   mu_hat <- out$mu_n
   
-  Si_table <- dat_epic %>%
-    distinct(id, id_original) %>%
-    arrange(id) %>%
-    mutate(S_offline = out$outBH$S) %>%
-    transmute(
-      id = as.character(id_original),
-      S_offline = S_offline
-    )
+ Si_table <- dat_epic %>%
+  distinct(id, id_original) %>%
+  arrange(id)
+
+S_offline <- out$outBH$S
+
+print(length(S_offline))
+print(nrow(Si_table))
+
+if (length(S_offline) != nrow(Si_table)) {
+  stop("Le nombre de points de rupture ne correspond pas au nombre d'individus.")
+}
+
+Si_table$S_offline <- S_offline
+
+Si_table <- Si_table %>%
+  transmute(
+    id = as.character(id_original),
+    S_offline = .data$S_offline
+  )
   
   param_offline <- data.frame(
     ram = rownames(lambda_hat),
@@ -484,24 +493,7 @@ off_corse24 <- run_offline(
   seed = 123
 )
 
-on_corse24 <- run_online(
-  dat_epic = prep_corse24$dat_epic,
-  t_final = prep_corse24$t_final,
-  lambda_hat = off_corse24$lambda_hat,
-  d_min = 1,
-  B = 200,
-  alpha = 0.05,
-  seed = 123
-)
 
-res_corse24 <- compare_and_plot_algorithms(
-  dat_epic = prep_corse24$dat_epic,
-  t_final = prep_corse24$t_final,
-  off = off_corse24,
-  on = on_corse24,
-  dataset_name = "Corse 2024",
-  time_unit = "hours"
-)
 ```
 
 ### Corse 25
